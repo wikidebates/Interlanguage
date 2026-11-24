@@ -1,5 +1,6 @@
 <?php
 
+use MediaWiki\Deferred\DeferredUpdates;
 use MediaWiki\MediaWikiServices;
 
 /**
@@ -118,7 +119,7 @@ class InterlanguageExtension {
 			'page_id = ll_from',
 		];
 		$row = $foreignDB->selectRow( $tables, $vars, $conds, __FUNCTION__ );
-		$updateInterlanguageLinks = !$row;
+		$sameTitleFallback = false;
 		if ( !$row ) {
 			// Try to find redirects
 			$db = MediaWikiServices::getInstance()->getConnectionProvider()->getReplicaDatabase();
@@ -145,7 +146,8 @@ class InterlanguageExtension {
 			}
 		}
 		if ( !$row ) {
-			// Try to find the same title
+			// Try to find the same title, only if no explicit or redirect match.
+			$sameTitleFallback = true;
 			$row = $foreignDB->selectRow(
 				'page',
 				'*',
@@ -158,8 +160,41 @@ class InterlanguageExtension {
 		}
 		if ( $row ) {
 			$pageId = $row->page_id;
-			$parserOutput->addModules( [ 'ext.Interlanguage' ] );
 			$a = $this->readLinksFromCentralDB( $foreignDB, $pageId );
+
+			if ( $sameTitleFallback ) {
+				// Never let incidental parsing overwrite an existing mapping.
+				// A different page in this edition may already be the translation.
+				$existing = $this->findLanguageTarget( $a, $wgLanguageCode );
+				if ( $existing !== null && !$this->matchesLocalTitle( $existing, $title ) ) {
+					return true;
+				}
+				if ( $existing === null ) {
+					$foreignDB->insert(
+						'interlanguage_links',
+						[
+							'ill_from' => $pageId,
+							'ill_lang' => $wgLanguageCode,
+							'ill_title' => $canonicalTitleText,
+						],
+						__METHOD__,
+						[ 'IGNORE' ]
+					);
+					$inserted = $foreignDB->affectedRows() > 0;
+					if ( !$inserted ) {
+						// Another request won the unique-key race. Its mapping
+						// must not be replaced, or misrepresented in this output.
+						$a = $this->readLinksFromCentralDB( $foreignDB, $pageId );
+						$existing = $this->findLanguageTarget( $a, $wgLanguageCode );
+						if ( $existing === null || !$this->matchesLocalTitle( $existing, $title ) ) {
+							return true;
+						}
+					} else {
+						$this->scheduleFallbackPurge( $foreignDB, $title, $row, $a );
+					}
+				}
+			}
+			$parserOutput->addModules( [ 'ext.Interlanguage' ] );
 
 			$foreignLang = substr( $wgInterlanguageExtensionInterwiki, 0, -1 );
 			$foreignTitle = null;
@@ -184,28 +219,61 @@ class InterlanguageExtension {
 			$parserOutput->setPageProperty( 'wikirouge-langlinks', serialize( $wikirougeLanglinks ) );
 			$this->addPageLink( $parserOutput, $foreignTitle );
 
-			if ( $updateInterlanguageLinks ) {
-				$index = [
-					'ill_from' => $pageId,
-					'ill_lang' => $wgLanguageCode,
-				];
-				$row = [
-					'ill_title' => $canonicalTitleText,
-				];
-				$foreignDB->upsert(
-					'interlanguage_links',
-					[ $index + $row ],
-					[ array_keys( $index ) ],
-					$row,
-					__METHOD__
-				);
-			}
 //			$this->sortLinks( $a );
 //			$this->linksToWiki( $a );
 //			$this->addPageLink( $parser->getOutput(), $foreignTitle );
 //			$parserOutput->setProperty( 'interlanguage_pages', @serialize( $ilp ) );
 		}
 		return true;
+	}
+
+	/** @param array $links Effective links read from the central database. */
+	private function findLanguageTarget( array $links, string $language ): ?string {
+		foreach ( $links as $link ) {
+			if ( $link['lang'] === $language ) {
+				return $link['*'];
+			}
+		}
+		return null;
+	}
+
+	private function matchesLocalTitle( string $target, Title $title ): bool {
+		$other = Title::newFromText( $target );
+		return $other !== null && !$other->isExternal() &&
+			$other->getNamespace() === $title->getNamespace() &&
+			$other->getDBkey() === $title->getDBkey();
+	}
+
+	/**
+	 * Notify the central page and existing peers only after a new fallback
+	 * row is committed. No synchronous remote requests during parsing.
+	 * The dependent wiki uses its own registered job queue and interwiki APIs.
+	 */
+	private function scheduleFallbackPurge( $db, Title $title, $centralRow, array $links ): void {
+		global $wgInterlanguageExtensionInterwiki, $wgLanguageCode, $wgInterlanguageExtensionNotifyFallbackChanges;
+
+		if ( !$wgInterlanguageExtensionNotifyFallbackChanges ) {
+			return;
+		}
+		$centralLanguage = rtrim( $wgInterlanguageExtensionInterwiki, ':' );
+		$centralTitle = $centralRow->page_title;
+		$ns = (int)$centralRow->page_namespace;
+		if ( $ns !== NS_MAIN ) {
+			$namespaces = MediaWikiServices::getInstance()->getNamespaceInfo()->getCanonicalNamespaces();
+			$centralTitle = $namespaces[$ns] . ':' . $centralTitle;
+		}
+		$affected = [ $centralLanguage => [ $centralTitle => true ] ];
+		foreach ( $links as $link ) {
+			if ( $link['lang'] !== $wgLanguageCode && $link['lang'] !== $centralLanguage ) {
+				$affected[$link['lang']][$link['*']] = true;
+			}
+		}
+		$job = new InterlanguageCentralExtensionPurgeJob( $title, [ 'ill' => $affected ] );
+		$db->onTransactionCommitOrIdle( static function () use ( $job ) {
+			DeferredUpdates::addCallableUpdate( static function () use ( $job ) {
+				MediaWikiServices::getInstance()->getJobQueueGroup()->push( $job );
+			} );
+		}, __METHOD__ );
 	}
 
 	/**
