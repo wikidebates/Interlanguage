@@ -625,24 +625,35 @@ THEEND;
 	function readLinksFromCentralDB( $dbr, $articleid ): array {
 		global $wgInterlanguageExtensionInterwiki;
 		$centralLang = rtrim( (string)$wgInterlanguageExtensionInterwiki, ':' );
-		$links = [];
-		foreach ( $this->readLinksFromDB( $dbr, $articleid ) as $link ) {
-			if ( $link['lang'] !== $centralLang ) {
-				$links[$link['lang']] = $link;
-			}
-		}
-		$res = $dbr->select(
-			'interlanguage_links',
-			[ 'ill_lang', 'ill_title' ],
-			[ 'ill_from' => $articleid ],
-			__METHOD__
-		);
+		// Both branches use their indexed source ID and share one SQL round trip.
+		$nativeQuery = $dbr->newSelectQueryBuilder()
+			->select( [ 'language' => 'll_lang', 'target' => 'll_title', 'is_native' => '1' ] )
+			->from( 'langlinks' )
+			->where( [ 'll_from' => $articleid ] );
+		$fallbackQuery = $dbr->newSelectQueryBuilder()
+			->select( [ 'language' => 'ill_lang', 'target' => 'ill_title', 'is_native' => '0' ] )
+			->from( 'interlanguage_links' )
+			->where( [ 'ill_from' => $articleid ] );
+		$res = $dbr->newUnionQueryBuilder()
+			->add( $nativeQuery )
+			->add( $fallbackQuery )
+			->all()
+			->caller( __METHOD__ )
+			->fetchResultSet();
+		$native = [];
+		$fallback = [];
 		foreach ( $res as $row ) {
-			if ( $row->ill_lang !== $centralLang && !isset( $links[$row->ill_lang] ) ) {
-				$links[$row->ill_lang] = [ 'lang' => $row->ill_lang, '*' => $row->ill_title ];
+			if ( $row->language === $centralLang ) {
+				continue;
+			}
+			$link = [ 'lang' => $row->language, '*' => $row->target ];
+			if ( (int)$row->is_native === 1 ) {
+				$native[$row->language] = $link;
+			} else {
+				$fallback[$row->language] = $link;
 			}
 		}
-		return array_values( $links );
+		return array_values( $native + $fallback );
 	}
 
 	/**
