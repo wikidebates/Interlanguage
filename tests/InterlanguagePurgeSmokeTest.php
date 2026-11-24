@@ -123,5 +123,51 @@ namespace {
 	assertInterlanguagePurge( $job->run() === true, 'Network failure must preserve the current job semantics' );
 	assertInterlanguagePurge( count( $logger->warnings ) === 2, 'Missing HTTP responses must be logged' );
 
+	// Keep the historical plain purge unless the target is explicitly opted in.
+	assertInterlanguagePurge( !str_contains( $services->http->urls[0], 'forcelinkupdate' ), 'Default must remain plain purge' );
+	$wgInterlanguagePurgeLinkUpdateLanguages = [ 'en' ];
+	$services->http->response = '{"purge":[{"title":"Topic:Subtopic","purged":"","linkupdate":""}]}';
+	$job->run();
+	$url = end( $services->http->urls );
+	assertInterlanguagePurge(
+		str_contains( $url, 'forcelinkupdate=1' ) && str_contains( $url, 'redirects=1' ) &&
+			!str_contains( $url, 'forcerecursivelinkupdate' ),
+		'Opt-in must request only a targeted link update and resolve redirects'
+	);
+	assertInterlanguagePurge( count( $logger->warnings ) === 2, 'API v1 empty-string flags are valid acknowledgements' );
+
+	$services->http->response = '{"purge":[{"title":"Topic:Subtopic","purged":""}],"warnings":{"purge":{"*":"Permission denied"}}}';
+	$job->run();
+	assertInterlanguagePurge( count( $logger->warnings ) === 3, 'Plain purge must not be mistaken for a link update' );
+
+	$services->http->response = '{"purge":[{"title":"Topic:Subtopic","missing":""}]}';
+	$job->run();
+	assertInterlanguagePurge( count( $logger->warnings ) === 3, 'Deleted peers need no link update' );
+
+	$services->http->response = '{"purge":[{"title":"Topic:Subtopic","purged":"","linkupdate":""}],"continue":{"continue":"next"}}';
+	$job->run();
+	assertInterlanguagePurge( count( $logger->warnings ) === 4, 'Incomplete API results must be reported' );
+
+	$wgInterlanguagePurgeLinkUpdateLanguages = [];
+	$services->http->response = '{"purge":[{"title":"Topic:Subtopic"}]}';
+	$job->run();
+	assertInterlanguagePurge( count( $logger->warnings ) === 5, 'Unacknowledged plain purges must also be reported' );
+
+	$many = [];
+	for ( $i = 1; $i <= 51; $i++ ) {
+		$many['Page ' . $i] = true;
+	}
+	$services->http->urls = [];
+	$services->http->response = '{"purge":[{"title":"Page","purged":""}]}';
+	$batchJob = new \InterlanguageCentralExtensionPurgeJob( new Title(), [ 'ill' => [ 'en' => $many ] ] );
+	$batchJob->run();
+	assertInterlanguagePurge( count( $services->http->urls ) === 2, 'Limit a purge API batch to 50 titles' );
+	$counts = [];
+	foreach ( $services->http->urls as $url ) {
+		parse_str( parse_url( $url, PHP_URL_QUERY ), $params );
+		$counts[] = count( explode( '|', $params['titles'] ) );
+	}
+	assertInterlanguagePurge( $counts === [ 50, 1 ], 'No titles may be lost while batching' );
+
 	echo "Interlanguage purge smoke tests: OK\n";
 }

@@ -28,6 +28,7 @@ $wgInterlanguageExtensionInterwiki = "";
 $wgInterlanguageExtensionSort = 'none';
 $wgInterlanguageExtensionSortPrepend = false;
 $wgInterlanguageExtensionNotifyFallbackChanges = false;
+$wgInterlanguagePurgeLinkUpdateLanguages = [];
 
 $wgExtensionCredits['parserhook'][] = array(
 	'path'			=> __FILE__,

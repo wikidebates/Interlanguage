@@ -116,6 +116,34 @@ MediaWiki rendering caches; it does not itself guarantee that persisted
 page properties or custom external HTML caches have been rebuilt. The
 offline mapping audit remains necessary.
 
+## Targeted secondary-data refresh (optional)
+
+Plain API purges invalidate rendering caches, but do not guarantee that
+MediaWiki rewrites the persisted parser property. A separate, opt-in
+configuration on the **sending** wiki can request core's non-recursive
+secondary-data update for specific destination language codes:
+
+```php
+$wgInterlanguagePurgeLinkUpdateLanguages = [ 'en' ];
+```
+
+Set this after the central or dependent loader. The default is an empty list,
+so existing installations keep ordinary purges. The opt-in request uses
+`forcelinkupdate=1` and `redirects=1` (not the recursive flag). It
+requires the receiving API to authorize **both** purge and linkpurge for
+the actual request identity. The job does not authenticate to the remote
+API by itself. **Do not grant linkpurge to anonymous users to enable this
+option in production.** Use a separately secured/authorized route and
+verify both flags and the persisted page property in the target wiki before
+activation. A successful HTTP response or plain purge is not proof of an
+updated property.
+
+The job logs missing acknowledgements and incomplete responses, skips missing
+or deleted peers, limits requests to batches of at most 50 titles and retains
+the existing non-retrying behavior. No new HTTP request is made by a parsing
+hook. Production authorization and targeted retry/reconciliation policy must
+be handled separately; no global link-table or cache rebuild is implied.
+
 ## Redirect safety
 
 Explicit central DB lookups follow up to 16 local redirects, using the real

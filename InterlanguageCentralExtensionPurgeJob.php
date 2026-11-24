@@ -40,32 +40,68 @@ class InterlanguageCentralExtensionPurgeJob extends Job {
 	 * @return bool
 	 */
 	public function run() {
-		//sleep() could be added here to reduce unnecessary use
+		global $wgInterlanguagePurgeLinkUpdateLanguages;
+
 		$ill = $this->params['ill'];
-
 		$mwServices = MediaWikiServices::getInstance();
+		$logger = LoggerFactory::getInstance( 'Interlanguage' );
 
-		foreach($ill as $lang => $pages) {
-//			$iw = Interwiki::fetch( $lang );
+		foreach ( $ill as $lang => $pages ) {
 			$iw = $mwServices->getInterwikiLookup()->fetch( $lang );
-			if( !$iw ) continue;
-			$apiUrl = $iw->getAPI();
-			if( !$apiUrl ) continue;
-			$apiUrl .= '?' . wfArrayToCGI( array(
-				'action'	=> 'purge',
-				'format'	=> 'json', //Smallest response
-				'titles'	=> implode( '|', array_keys( $pages ) )
-			) );
-//			Http::post( $apiUrl );
-			$response = $mwServices->getHttpRequestFactory()->post( $apiUrl, [], __METHOD__ );
-			$result = is_string( $response ) ? json_decode( $response, true ) : null;
-			if ( !is_array( $result ) || !isset( $result['purge'] ) || isset( $result['error'] ) ) {
-				LoggerFactory::getInstance( 'Interlanguage' )->warning(
-					'Remote purge failed or returned an invalid response for interwiki {language}',
-					[ 'language' => $lang ]
-				);
+			if ( !$iw || !$iw->getAPI() ) {
+				continue;
 			}
-			// Keep the existing non-retrying behavior until remote API permissions are verified.
+			$apiUrl = $iw->getAPI();
+			$force = in_array( $lang, $wgInterlanguagePurgeLinkUpdateLanguages ?? [], true );
+
+			// Core limits ordinary API title lists to 50. Batches also avoid
+			// unbounded requests if old queued jobs contain many targets.
+			foreach ( array_chunk( array_keys( $pages ), 50 ) as $titles ) {
+				$params = [
+					'action' => 'purge',
+					'format' => 'json',
+					'titles' => implode( '|', $titles ),
+				];
+				if ( $force ) {
+					// Requires the target API's linkpurge right. Never request
+					// a recursive refresh of unrelated dependent pages.
+					$params['forcelinkupdate'] = 1;
+					$params['redirects'] = 1;
+				}
+				$url = $apiUrl . ( str_contains( $apiUrl, '?' ) ? '&' : '?' ) . wfArrayToCGI( $params );
+				$response = $mwServices->getHttpRequestFactory()->post( $url, [], __METHOD__ );
+				$result = is_string( $response ) ? json_decode( $response, true ) : null;
+
+				if ( !is_array( $result ) || !is_array( $result['purge'] ?? null ) ||
+					!$result['purge'] || isset( $result['error'] ) || isset( $result['continue'] )
+				) {
+					$logger->warning(
+						'Remote purge failed or returned an incomplete response for interwiki {language}',
+						[ 'language' => $lang ]
+					);
+					continue;
+				}
+				foreach ( $result['purge'] as $page ) {
+					if ( !is_array( $page ) ) {
+						$logger->warning(
+							'Remote purge returned an invalid page result for interwiki {language}',
+							[ 'language' => $lang ]
+						);
+						continue;
+					}
+					// A deleted or nonexistent old peer cannot be refreshed.
+					if ( isset( $page['missing'] ) || isset( $page['invalid'] ) ) {
+						continue;
+					}
+					if ( !isset( $page['purged'] ) || ( $force && !isset( $page['linkupdate'] ) ) ) {
+						$logger->warning(
+							'Remote purge or requested link update was not acknowledged for interwiki {language}, page {title}',
+							[ 'language' => $lang, 'title' => $page['title'] ?? '' ]
+						);
+					}
+				}
+			}
+			// Preserve non-retrying jobs: permission errors must not cause retry storms.
 		}
 
 		return true;
