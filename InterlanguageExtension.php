@@ -29,6 +29,9 @@ use MediaWiki\MediaWikiServices;
  */
 
 class InterlanguageExtension {
+	private const MAX_REDIRECT_DEPTH = 16;
+	private const MAX_REDIRECT_TITLES = 64;
+
 	/**
 	 * @var \Wikimedia\Rdbms\IDatabase|false
 	 */
@@ -94,7 +97,8 @@ class InterlanguageExtension {
 		if ( $wgLanguageCode === rtrim( $wgInterlanguageExtensionInterwiki, ':' ) ) {
 			return true;
 		}
-		if ( !$title->canExist() ) {
+		// Redirect pages do not themselves establish automatic translation groups.
+		if ( !$title->canExist() || ( $content !== null && $content->isRedirect() ) ) {
 			return true;
 		}
 
@@ -110,50 +114,31 @@ class InterlanguageExtension {
 		$canonicalTitleText = self::getCanonicalTitleText( $title );
 
 		$foreignDB = $this->foreignDbw;
-		$tables = [ 'langlinks', 'page' ];
-		$vars = [ 'page_id', 'page_namespace', 'page_title' ];
-		$conds = [
-//				'LOWER( ll_title )' => strtolower( $title->getPrefixedDBkey() ),
-			'll_title' => $canonicalTitleText,
-			'll_lang' => $wgLanguageCode,
-			'page_id = ll_from',
-		];
-		$row = $foreignDB->selectRow( $tables, $vars, $conds, __FUNCTION__ );
-		$sameTitleFallback = false;
-		if ( !$row ) {
-			// Try to find redirects
-			$db = MediaWikiServices::getInstance()->getConnectionProvider()->getReplicaDatabase();
-			$res = $db->select(
-				[ 'redirect', 'page' ],
-				'page.*',
-				[
-					'rd_namespace' => $title->getNamespace(),
-					'rd_title' => $title->getDBkey(),
-					'rd_from = page_id',
-				],
-				__FUNCTION__
-			);
-			$redirects = [];
-			if ( $res ) {
-				foreach ( $res as $r ) {
-					$t = Title::newFromRow( $r );
-					$redirects[] = self::getCanonicalTitleText( $t );
-				}
-			}
-			if ( $redirects ) {
-				$conds['ll_title'] = $redirects;
-				$row = $foreignDB->selectRow( $tables, $vars, $conds, __FUNCTION__ );
-			}
+		$db = MediaWikiServices::getInstance()->getConnectionProvider()->getReplicaDatabase();
+		$targets = $this->getLocalRedirectTitles( $db, $title );
+		if ( $targets === null ) {
+			// A truncated alias search cannot establish an unambiguous mapping.
+			return true;
 		}
-		if ( !$row ) {
-			// Try to find the same title, only if no explicit or redirect match.
-			$sameTitleFallback = true;
+		$candidates = $this->findCentralNativeCandidates( $foreignDB, $targets, $wgLanguageCode );
+		if ( count( $candidates ) > 1 ) {
+			return true;
+		}
+		$row = reset( $candidates );
+		$sameTitleFallback = !$row;
+		if ( $row && (int)$row->page_is_redirect ) {
+			// A mapping attached to a central redirect is not proof that its
+			// destination has the same translation group.
+			return true;
+		}
+		if ( $sameTitleFallback ) {
 			$row = $foreignDB->selectRow(
 				'page',
 				'*',
 				[
 					'page_namespace' => $title->getNamespace(),
 					'page_title' => $title->getDBkey(),
+					'page_is_redirect' => 0,
 				],
 				__METHOD__
 			);
@@ -225,6 +210,78 @@ class InterlanguageExtension {
 //			$parserOutput->setProperty( 'interlanguage_pages', @serialize( $ilp ) );
 		}
 		return true;
+	}
+
+	/**
+	 * Return local titles which redirect to this page, including indirect aliases.
+	 * Each step uses the redirect target index; no scan or remote request.
+	 * Section and interwiki redirects are not whole-page translation aliases.
+	 * Null means the bounded search was incomplete, not that no aliases exist.
+	 */
+	private function getLocalRedirectTitles( $db, Title $title ): ?array {
+		$queue = [ [ $title, 0 ] ];
+		$seen = [ $title->getNamespace() . ':' . $title->getDBkey() => true ];
+		$targets = [ self::getCanonicalTitleText( $title ) ];
+
+		for ( $i = 0; $i < count( $queue ); $i++ ) {
+			[ $current, $depth ] = $queue[$i];
+			$rows = $db->select(
+				[ 'redirect', 'page' ],
+				[ 'page.*', 'rd_interwiki', 'rd_fragment' ],
+				[
+					'rd_namespace' => $current->getNamespace(),
+					'rd_title' => $current->getDBkey(),
+					'rd_from = page_id',
+					'page_is_redirect' => 1,
+				],
+				__METHOD__,
+				[ 'LIMIT' => self::MAX_REDIRECT_TITLES + 1 ]
+			);
+			$scanned = 0;
+			foreach ( $rows as $redirect ) {
+				if ( ++$scanned > self::MAX_REDIRECT_TITLES ) {
+					return null;
+				}
+				if ( (string)$redirect->rd_interwiki !== '' || (string)$redirect->rd_fragment !== '' ) {
+					continue;
+				}
+				$alias = Title::newFromRow( $redirect );
+				$key = $alias->getNamespace() . ':' . $alias->getDBkey();
+				if ( isset( $seen[$key] ) ) {
+					continue;
+				}
+				if ( $depth >= self::MAX_REDIRECT_DEPTH || count( $seen ) >= self::MAX_REDIRECT_TITLES ) {
+					return null;
+				}
+				$seen[$key] = true;
+				$targets[] = self::getCanonicalTitleText( $alias );
+				$queue[] = [ $alias, $depth + 1 ];
+			}
+		}
+		return array_values( array_unique( $targets ) );
+	}
+
+	/**
+	 * The native source-language key is unique. Two distinct rows are enough
+	 * to establish ambiguity. Preserve the original indexed title predicates.
+	 */
+	private function findCentralNativeCandidates( $db, array $targets, string $language ): array {
+		$rows = $db->select(
+			[ 'langlinks', 'page' ],
+			[ 'page_id', 'page_namespace', 'page_title', 'page_is_redirect' ],
+			[
+				'll_title' => $targets,
+				'll_lang' => $language,
+				'page_id = ll_from',
+			],
+			__METHOD__,
+			[ 'LIMIT' => 2 ]
+		);
+		$candidates = [];
+		foreach ( $rows as $row ) {
+			$candidates[(int)$row->page_id] = $row;
+		}
+		return $candidates;
 	}
 
 	/** @param array $links Effective links read from the central database. */
@@ -336,40 +393,53 @@ class InterlanguageExtension {
 
 		list( $dbKey, $namespace ) = $this->getKeyNS( $param );
 
-		$a = [ 'query' => [ 'pages' => [] ] ];
-
-		$res = $this->foreignDbr->select(
-			'page',
-			[ 'page_id', 'page_is_redirect' ],
-			[
-				'page_title' => $dbKey,
-				'page_namespace' => $namespace
-			],
-			__FUNCTION__
-		);
-		$res = $res->fetchObject();
-
-		if ( $res === false ) {
-			// There is no such article on the central wiki
-			$a['query']['pages'][-1] = [ 'missing' => "" ];
-		} else {
-			if ( $res->page_is_redirect ) {
-				$res = $this->foreignDbr->select(
-					[ 'redirect', 'page' ],
-					'page_id',
-					[
-						'rd_title = page_title',
-						'rd_from' => $res->page_id,
-					],
-					__FUNCTION__
-				);
-				$res = $res->fetchObject();
-			}
-
-			$a['query']['pages'][0] = [ 'langlinks' => $this->readLinksFromCentralDB( $this->foreignDbr, $res->page_id ) ];
+		$row = $this->resolveCentralPage( $this->foreignDbr, $namespace, $dbKey );
+		if ( $row === null ) {
+			return [ 'query' => [ 'pages' => [ -1 => [ 'missing' => '' ] ] ] ];
 		}
 
-		return $a;
+		return [ 'query' => [ 'pages' => [
+			0 => [ 'langlinks' => $this->readLinksFromCentralDB( $this->foreignDbr, (int)$row->page_id ) ],
+		] ] ];
+	}
+
+	/**
+	 * Resolve local central redirects using indexed page and redirect keys.
+	 * Do not follow interwiki redirects, cycles, broken targets or unbounded chains.
+	 * An explicit lookup of a section redirect uses its containing page.
+	 */
+	private function resolveCentralPage( $db, int $namespace, string $dbKey ): ?object {
+		$seen = [];
+		for ( $depth = 0; $depth <= self::MAX_REDIRECT_DEPTH; $depth++ ) {
+			$row = $db->selectRow(
+				'page',
+				[ 'page_id', 'page_is_redirect' ],
+				[ 'page_namespace' => $namespace, 'page_title' => $dbKey ],
+				__METHOD__
+			);
+			if ( !$row || isset( $seen[(int)$row->page_id] ) ) {
+				return null;
+			}
+			if ( !(int)$row->page_is_redirect ) {
+				return $row;
+			}
+			$seen[(int)$row->page_id] = true;
+			if ( $depth === self::MAX_REDIRECT_DEPTH ) {
+				return null;
+			}
+			$redirect = $db->selectRow(
+				'redirect',
+				[ 'rd_namespace', 'rd_title', 'rd_interwiki' ],
+				[ 'rd_from' => (int)$row->page_id ],
+				__METHOD__
+			);
+			if ( !$redirect || (string)$redirect->rd_interwiki !== '' || $redirect->rd_title === '' ) {
+				return null;
+			}
+			$namespace = (int)$redirect->rd_namespace;
+			$dbKey = $redirect->rd_title;
+		}
+		return null;
 	}
 
 	/**

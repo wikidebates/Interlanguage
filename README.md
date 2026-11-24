@@ -116,6 +116,23 @@ MediaWiki rendering caches; it does not itself guarantee that persisted
 page properties or custom external HTML caches have been rebuilt. The
 offline mapping audit remains necessary.
 
+## Redirect safety
+
+Explicit central DB lookups follow up to 16 local redirects, using the real
+destination namespace and DB key. Broken targets, interwiki redirects and
+cycles return a missing-page result rather than an unrelated group.
+
+For automatic dependent discovery, local whole-page redirect aliases are
+searched backwards with indexed target lookups (up to 16 levels and 64 titles,
+including the current page). Section redirects and interwiki redirects are
+not whole-page aliases. An incomplete search or competing native source
+pages prevents automatic discovery. Redirect pages cannot themselves create
+same-title mappings, and central redirect sources are not automatically
+treated as equivalent to their destinations. Ordinary pages add one indexed
+local redirect lookup compared with the former exact-match fast path; no
+HTTP requests or full-table scans are added. This change does not yet
+normalize all stored native title forms or index supplemental reverse links.
+
 ## Architecture
 
 - Central mode combines native language links and the central mapping table;
@@ -133,7 +150,7 @@ and schema caveats above for the current code.
 
 ## Tests
 
-The autonomous CI runs PHP 8.4 syntax checks and all seven isolated
+The autonomous CI runs PHP 8.4 syntax checks and all eight isolated
 regression scripts:
 
 ```sh
