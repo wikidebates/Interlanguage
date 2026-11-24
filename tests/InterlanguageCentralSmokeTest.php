@@ -69,6 +69,7 @@ namespace {
 		}
 	}
 
+	$wgLanguageCode = 'fr';
 	$links = [ 'en:Topic:Subtopic' ];
 	$linkFlags = [];
 	$title = new \MediaWiki\Title\Title();
@@ -77,10 +78,9 @@ namespace {
 	assertInterlanguageCentral(
 		$links === [
 			'en:Topic:Subtopic',
-			'fr:Projet:Essai',
 			'de:Projekt:Test:2',
 		],
-		'Central links must preserve colons and never replace existing language links'
+		'Central links must preserve colons, skip self mappings and prefer existing language links'
 	);
 	$db = \MediaWiki\MediaWikiServices::getInstance()
 		->getConnectionProvider()->getReplicaDatabase();
