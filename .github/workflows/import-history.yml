@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
   group: interlanguage-history-import
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   extract:
@@ -26,9 +26,12 @@ jobs:
           EXPECTED_TREE: 3efd6932cb1eeb2193f3f447641c328ea3832c97
         run: |
           set -euo pipefail
-          git clone --no-checkout --filter=blob:none --single-branch --branch main https://github.com/wikidebates/wikidebates-mediawiki-farm.git "$RUNNER_TEMP/farm"
+          git clone --no-checkout --single-branch --branch main https://github.com/wikidebates/wikidebates-mediawiki-farm.git "$RUNNER_TEMP/farm"
           cd "$RUNNER_TEMP/farm"
           git cat-file -e "$SOURCE_COMMIT^{commit}"
+          git sparse-checkout init --cone
+          git sparse-checkout set extensions/Interlanguage
+          git checkout --detach "$SOURCE_COMMIT"
           test "$(git rev-parse "$SOURCE_COMMIT:extensions/Interlanguage")" = "$EXPECTED_TREE"
           split=$(git subtree split --quiet --prefix=extensions/Interlanguage "$SOURCE_COMMIT")
           test "$(git rev-parse "$split^{tree}")" = "$EXPECTED_TREE"
@@ -42,7 +45,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker run --rm --network none -v "$RUNNER_TEMP/extracted:/repo:ro" ghcr.io/gitleaks/gitleaks:v8.24.3 git --log-opts="--all" --redact=100 --no-banner /repo
+          docker run --rm --network none -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo -v "$RUNNER_TEMP/extracted:/repo:ro" ghcr.io/gitleaks/gitleaks:v8.24.3 git --log-opts="--all" --redact=100 --no-banner /repo
       - name: Package audited history
         shell: bash
         run: |
