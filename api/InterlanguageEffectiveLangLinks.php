@@ -95,10 +95,13 @@ class InterlanguageEffectiveLangLinks extends ApiQueryLangLinks {
 						continue;
 					}
 					$code = $link['lang'];
-					if ( isset( $extra[$code] ) && $extra[$code] !== $link['*'] ) {
+					// Parser properties may contain DB keys (notably the central
+					// page's title). Expose the equivalent API title in text form.
+					$target = str_replace( '_', ' ', $link['*'] );
+					if ( isset( $extra[$code] ) && $extra[$code] !== $target ) {
 						$conflicts[$code] = true;
 					}
-					$extra[$code] = $link['*'];
+					$extra[$code] = $target;
 				}
 				$id = (int)$row->pp_page;
 				$links[$id] = ( $links[$id] ?? [] ) + array_diff_key( $extra, $conflicts );
