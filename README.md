@@ -116,6 +116,53 @@ MediaWiki rendering caches; it does not itself guarantee that persisted
 page properties or custom external HTML caches have been rebuilt. The
 offline mapping audit remains necessary.
 
+## Indexed normalized reverse lookup (optional, central SQL migration)
+
+This mode recognizes legitimate target spellings without changing the raw
+`langlinks` or `interlanguage_links` values. The central dictionary indexes
+raw spellings by a coarse suffix key independent of namespace names.
+It never decides whether a colon is a namespace separator: the dependent
+wiki parses each live candidate with its own MediaWiki title parser and
+compares namespace number and DB key. Native mappings take precedence over
+supplemental mappings; ambiguous candidates and incomplete searches (more
+than 256 SQL candidates) do not create an automatic mapping. A supplemental
+row overridden by a native row for the same central source/language is
+excluded. Existing forward links are not rewritten, even in a conflicting
+group. No additional HTTP or foreign database access from the central wiki.
+
+The table is append-only for spellings. Queries join the actual native or
+supplemental mapping, so deleting a mapping immediately makes its old key
+irrelevant. Central link updates and dependent fallback insertion remember
+new spellings before publishing them. Direct SQL inserts or changes to
+either mapping table bypass these hooks and must be followed by a verified
+backfill before enabling or continuing to rely on normalized lookup.
+
+Rollout on MySQL/MariaDB (disabled by default; no global cache rebuild):
+
+1. Create the central-only table from `sql/interlanguage_title_keys.sql`
+   (the central schema-update hook also registers it).
+2. After loading the extension, set `$wgInterlanguageMaintainTitleKeys = true;`
+   on the central wiki **and all dependent writers**. Leave
+   `$wgInterlanguageUseTitleKeys` false.
+3. From the MediaWiki root, on the central wiki only, run
+   `php maintenance/run.php ./extensions/Interlanguage/maintenance/buildTitleKeys.php --wiki=fr --apply`
+   and then repeat without `--apply` to verify zero missing keys. This
+   offline operation reads mapping rows and only inserts auxiliary keys.
+4. Enable `$wgInterlanguageUseTitleKeys = true;` on dependent wikis
+   after successful verification. A reader also maintains keys for its
+   own fallback inserts. The existing exact native lookup remains available
+   when the reader setting is false.
+5. Repeat the read-only coverage check after imports/direct SQL operations,
+   changes to core title normalization, and before switching readers on again.
+   If coverage is uncertain, disable the readers until it is restored.
+
+The central reader account needs SELECT on the new table; both central and
+dependent writer accounts need SELECT and INSERT there. No DELETE on the
+dictionary is necessary for normal operation. The extension does not grant
+SQL rights or alter the original mapping tables. The index changes candidate
+discovery, not the stored API titles or the canonical URL configuration
+used by WikiSEO.
+
 ## Targeted secondary-data refresh (optional)
 
 Plain API purges invalidate rendering caches, but do not guarantee that
@@ -180,7 +227,7 @@ and schema caveats above for the current code.
 
 ## Tests
 
-The autonomous CI runs PHP 8.4 syntax checks and all eight isolated
+The autonomous CI runs PHP 8.4 syntax checks and all nine isolated
 regression scripts:
 
 ```sh

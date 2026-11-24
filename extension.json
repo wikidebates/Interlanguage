@@ -11,11 +11,13 @@
 
 	"AutoloadClasses": {
 		"InterlanguageCentralExtension": "InterlanguageCentralExtension.php",
+		"InterlanguageTitleKeys": "InterlanguageTitleKeys.php",
 		"InterlanguageCentralExtensionPurgeJob": "InterlanguageCentralExtensionPurgeJob.php"
 	},
 
 	"Hooks": {
 		"ParserFirstCallInit": "InterlanguageCentralExtension::onParserFirstCallInit",
+		"LoadExtensionSchemaUpdates": "InterlanguageCentralExtension::onLoadExtensionSchemaUpdates",
 		"LinksUpdate": "InterlanguageCentralExtension::onLinksUpdate",
 		"LinksUpdateComplete": "InterlanguageCentralExtension::onLinksUpdateComplete",
 		"LanguageLinks": "InterlanguageCentralExtension::onLanguageLinks"

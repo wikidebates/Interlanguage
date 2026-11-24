@@ -29,6 +29,8 @@ $wgInterlanguageExtensionSort = 'none';
 $wgInterlanguageExtensionSortPrepend = false;
 $wgInterlanguageExtensionNotifyFallbackChanges = false;
 $wgInterlanguagePurgeLinkUpdateLanguages = [];
+$wgInterlanguageMaintainTitleKeys = false;
+$wgInterlanguageUseTitleKeys = false;
 
 $wgExtensionCredits['parserhook'][] = array(
 	'path'			=> __FILE__,
@@ -42,6 +44,7 @@ $wgExtensionCredits['parserhook'][] = array(
 $wgMessagesDirs['Interlanguage'] = __DIR__ . '/i18n/interlanguage';
 $wgExtensionMessagesFiles['InterlanguageMagic'] = dirname(__FILE__) . '/Interlanguage.i18n.magic.php';
 $wgAutoloadClasses['InterlanguageExtension'] = dirname(__FILE__) . '/InterlanguageExtension.php';
+$wgAutoloadClasses['InterlanguageTitleKeys'] = __DIR__ . '/InterlanguageTitleKeys.php';
 $wgAutoloadLocalClasses['ApiQueryLangLinks'] = dirname(__FILE__) . '/api/ApiQueryLangLinks.php';
 $wgAutoloadClasses['InterlanguageEffectiveLangLinks'] = __DIR__ . '/api/InterlanguageEffectiveLangLinks.php';
 $wgAutoloadClasses['InterlanguageCentralExtensionPurgeJob'] = __DIR__ . '/InterlanguageCentralExtensionPurgeJob.php';
