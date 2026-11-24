@@ -131,12 +131,14 @@ Set this after the central or dependent loader. The default is an empty list,
 so existing installations keep ordinary purges. The opt-in request uses
 `forcelinkupdate=1` and `redirects=1` (not the recursive flag). It
 requires the receiving API to authorize **both** purge and linkpurge for
-the actual request identity. The job does not authenticate to the remote
-API by itself. **Do not grant linkpurge to anonymous users to enable this
-option in production.** Use a separately secured/authorized route and
-verify both flags and the persisted page property in the target wiki before
-activation. A successful HTTP response or plain purge is not proof of an
-updated property.
+the actual request identity. MediaWiki 1.43 normally defines these as
+implicit rights, so a default installation may already authorize the job's
+anonymous request. If an installation deliberately declares linkpurge as
+an explicit available right and restricts its permissions, the job does not
+authenticate to the remote API by itself. Do not relax existing restrictions
+to enable this option. Verify the target's actual authorization, both API
+flags and the persisted page property before activation. A successful HTTP
+response or plain purge is not proof of an updated property.
 
 The job logs missing acknowledgements and incomplete responses, skips missing
 or deleted peers, limits requests to batches of at most 50 titles and retains
