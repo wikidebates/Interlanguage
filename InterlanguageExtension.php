@@ -89,6 +89,10 @@ class InterlanguageExtension {
 		if ( !isset( $wgInterlanguageExtensionDB ) || !$wgInterlanguageExtensionDB ) {
 			return true;
 		}
+		// The dependent hook must never write a mapping for the central language.
+		if ( $wgLanguageCode === rtrim( $wgInterlanguageExtensionInterwiki, ':' ) ) {
+			return true;
+		}
 		if ( !$title->canExist() ) {
 			return true;
 		}
@@ -155,7 +159,7 @@ class InterlanguageExtension {
 		if ( $row ) {
 			$pageId = $row->page_id;
 			$parserOutput->addModules( [ 'ext.Interlanguage' ] );
-			$a = $this->readLinksFromDB( $foreignDB, $pageId );
+			$a = $this->readLinksFromCentralDB( $foreignDB, $pageId );
 
 			$foreignLang = substr( $wgInterlanguageExtensionInterwiki, 0, -1 );
 			$foreignTitle = null;
@@ -294,7 +298,7 @@ class InterlanguageExtension {
 				$res = $res->fetchObject();
 			}
 
-			$a['query']['pages'][0] = [ 'langlinks' => $this->readLinksFromDB( $this->foreignDbr, $res->page_id ) ];
+			$a['query']['pages'][0] = [ 'langlinks' => $this->readLinksFromCentralDB( $this->foreignDbr, $res->page_id ) ];
 		}
 
 		return $a;
@@ -610,6 +614,46 @@ THEEND;
 			$a[] = [ 'lang' => $row->ll_lang, '*' => $row->ll_title ];
 		}
 		return $a;
+	}
+
+	/**
+	 * Read effective central mappings. Native links take precedence, exactly
+	 * as in the central LanguageLinks hook. Legacy central self-mappings
+	 * must not override the source page's actual title.
+	 * Only use this for the central database, not preservePageLinks().
+	 */
+	function readLinksFromCentralDB( $dbr, $articleid ): array {
+		global $wgInterlanguageExtensionInterwiki;
+		$centralLang = rtrim( (string)$wgInterlanguageExtensionInterwiki, ':' );
+		// Both branches use their indexed source ID and share one SQL round trip.
+		$nativeQuery = $dbr->newSelectQueryBuilder()
+			->select( [ 'language' => 'll_lang', 'target' => 'll_title', 'is_native' => '1' ] )
+			->from( 'langlinks' )
+			->where( [ 'll_from' => $articleid ] );
+		$fallbackQuery = $dbr->newSelectQueryBuilder()
+			->select( [ 'language' => 'ill_lang', 'target' => 'ill_title', 'is_native' => '0' ] )
+			->from( 'interlanguage_links' )
+			->where( [ 'ill_from' => $articleid ] );
+		$res = $dbr->newUnionQueryBuilder()
+			->add( $nativeQuery )
+			->add( $fallbackQuery )
+			->all()
+			->caller( __METHOD__ )
+			->fetchResultSet();
+		$native = [];
+		$fallback = [];
+		foreach ( $res as $row ) {
+			if ( $row->language === $centralLang ) {
+				continue;
+			}
+			$link = [ 'lang' => $row->language, '*' => $row->target ];
+			if ( (int)$row->is_native === 1 ) {
+				$native[$row->language] = $link;
+			} else {
+				$fallback[$row->language] = $link;
+			}
+		}
+		return array_values( $native + $fallback );
 	}
 
 	/**

@@ -115,6 +115,7 @@ class InterlanguageCentralExtension {
 	 * Inject central interlanguage links
 	 */
 	public static function onLanguageLinks( Title $title, &$links, &$linkFlags ) {
+		global $wgLanguageCode;
 
 		$pageId = $title->getArticleID();
 		if ( !$pageId ) {
@@ -144,7 +145,7 @@ class InterlanguageCentralExtension {
 		);
 
 		foreach ( $res as $row ) {
-			if ( isset( $a[$row->ill_lang] ) ) {
+			if ( $row->ill_lang === $wgLanguageCode || isset( $a[$row->ill_lang] ) ) {
 				continue;
 			}
 
