@@ -66,8 +66,29 @@ $wgAutoloadLocalClasses['ApiQueryLangLinks'] = "$IP/extensions/Interlanguage/api
 $wgAPIPropModules['langlinks'] = 'ApiQueryLangLinks';
 ```
 
-Do not change production registration as part of the repository migration.
-Verify the existing farm configuration separately.
+The old API module is retained for compatibility only. For this farm,
+prefer the new uniquely named read-only module once the integration tests
+and deployment audit have passed. It must be opted into explicitly, after
+the central/dependent loader, on all six editions:
+
+```php
+$wgAPIPropModules['langlinks'] = [
+	'class' => 'InterlanguageEffectiveLangLinks',
+	'services' => [
+		'LanguageNameUtils',
+		'ContentLanguage',
+		'UrlUtils',
+	],
+];
+```
+
+It uses native and supplemental mappings on the central wiki, and native
+links plus persisted parser properties on dependent wikis. Native links take
+precedence. Unlike the old module, it retains local page IDs across
+multi-title requests, and applies filtering and continuation after merging.
+It never renders or writes pages. Missing or stale parser properties must
+still be addressed by the coordinated cache migration and offline audit.
+Do not configure both overrides.
 
 ## Architecture
 
