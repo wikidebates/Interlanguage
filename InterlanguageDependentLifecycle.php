@@ -189,7 +189,8 @@ final class InterlanguageDependentLifecycle {
 						'ill_from' => $id, 'ill_lang' => $wgLanguageCode, 'ill_title' => $row->target,
 					], __METHOD__ );
 				}
-			} elseif ( !$native && count( $supplemental ) === 1 && count( $direct ) === 1 &&
+			} elseif ( ( $GLOBALS['wgInterlanguageUseTitleKeys'] ?? false ) && !$native &&
+				count( $supplemental ) === 1 && count( $direct ) === 1 &&
 				!(int)$newRow->page_is_redirect
 			) {
 				$id = array_key_first( $direct );
@@ -228,7 +229,8 @@ final class InterlanguageDependentLifecycle {
 				}
 			}
 		}
-		$refresh = $new ?? ( $formerDestination ? self::resolveLocal( $local, $formerDestination ) : null );
+		$refresh = !$groups ? null : ( $new ? self::resolveLocal( $local, $new ) :
+			( $formerDestination ? self::resolveLocal( $local, $formerDestination ) : null ) );
 		$refreshRow = $refresh ? self::localRow( $local, $refresh ) : null;
 		if ( !$groups && !$refreshRow ) {
 			return;

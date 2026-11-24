@@ -127,8 +127,8 @@ Dependent moves and deletions use the primary local and central databases
 after the local change commits. Only direct verified supplemental rows can
 be deleted when a local page is gone; native langlinks are never changed.
 A move with a redirect preserves the old valid spelling. A move without a
-redirect can retarget a unique, non-shadowed supplemental row if no competing
-native or automatic claim is found; the old row is compared exactly and
+redirect can retarget a unique, non-shadowed supplemental row only when the
+normalized reader is active and no competing native or automatic claim is found; the old row is compared exactly and
 deleted/inserted atomically, without requesting an additional UPDATE grant.
 A missing or incomplete index search, competing claims, and deleted file or
 MediaWiki message pages are not grounds for speculative remapping. The native
