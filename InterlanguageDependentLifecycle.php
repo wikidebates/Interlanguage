@@ -5,6 +5,7 @@ declare( strict_types=1 );
 use MediaWiki\Deferred\DeferredUpdates;
 use MediaWiki\Logger\LoggerFactory;
 use MediaWiki\MediaWikiServices;
+use MediaWiki\Revision\SlotRecord;
 use MediaWiki\Title\Title;
 use Wikimedia\Rdbms\IDatabase;
 
@@ -21,12 +22,15 @@ final class InterlanguageDependentLifecycle {
 		}
 		$title = Title::makeTitle( $page->getNamespace(), $page->getDBkey() );
 		$db = MediaWikiServices::getInstance()->getConnectionProvider()->getPrimaryDatabase();
-		// The deletion hook precedes secondary redirect-table cleanup. Capture
-		// the former destination so its persistent property can be refreshed.
-		$redirect = $db->selectRow( 'redirect', [ 'rd_namespace', 'rd_title', 'rd_interwiki', 'rd_fragment' ],
-			[ 'rd_from' => (int)$pageId ], __METHOD__ );
-		$destination = $redirect && (string)$redirect->rd_interwiki === '' && (string)$redirect->rd_fragment === ''
-			? Title::makeTitle( (int)$redirect->rd_namespace, $redirect->rd_title ) : null;
+		// Core may already have cleared its redirect row. The deleted
+		// revision is the authoritative pre-delete source, including in
+		// maintenance mode. Do not use suppressed revision content.
+		$destination = $revision->getContent( SlotRecord::MAIN )?->getRedirectTarget();
+		if ( $destination && ( $destination->isExternal() || $destination->getFragment() !== '' ||
+			!$destination->canExist() )
+		) {
+			$destination = null;
+		}
 		self::afterCommit( $db, static function () use ( $title, $destination ) {
 			self::reconcile( $title, null, 0, $destination );
 		} );
