@@ -233,7 +233,7 @@ class InterlanguageExtension {
 	 * Section and interwiki redirects are not whole-page translation aliases.
 	 * Null means the bounded search was incomplete, not that no aliases exist.
 	 */
-	private function getLocalRedirectTitles( $db, Title $title ): ?array {
+	public function getLocalRedirectTitles( $db, Title $title ): ?array {
 		$queue = [ [ $title, 0 ] ];
 		$seen = [ $title->getNamespace() . ':' . $title->getDBkey() => true ];
 		$targets = [ self::getCanonicalTitleText( $title ) ];

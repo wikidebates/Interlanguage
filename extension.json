@@ -20,6 +20,7 @@
 		"LoadExtensionSchemaUpdates": "InterlanguageCentralExtension::onLoadExtensionSchemaUpdates",
 		"LinksUpdate": "InterlanguageCentralExtension::onLinksUpdate",
 		"LinksUpdateComplete": "InterlanguageCentralExtension::onLinksUpdateComplete",
+		"PageMoveComplete": "InterlanguageCentralExtension::onPageMoveComplete",
 		"LanguageLinks": "InterlanguageCentralExtension::onLanguageLinks"
 	},
 

@@ -45,6 +45,7 @@ $wgMessagesDirs['Interlanguage'] = __DIR__ . '/i18n/interlanguage';
 $wgExtensionMessagesFiles['InterlanguageMagic'] = dirname(__FILE__) . '/Interlanguage.i18n.magic.php';
 $wgAutoloadClasses['InterlanguageExtension'] = dirname(__FILE__) . '/InterlanguageExtension.php';
 $wgAutoloadClasses['InterlanguageTitleKeys'] = __DIR__ . '/InterlanguageTitleKeys.php';
+$wgAutoloadClasses['InterlanguageDependentLifecycle'] = __DIR__ . '/InterlanguageDependentLifecycle.php';
 $wgAutoloadLocalClasses['ApiQueryLangLinks'] = dirname(__FILE__) . '/api/ApiQueryLangLinks.php';
 $wgAutoloadClasses['InterlanguageEffectiveLangLinks'] = __DIR__ . '/api/InterlanguageEffectiveLangLinks.php';
 $wgAutoloadClasses['InterlanguageCentralExtensionPurgeJob'] = __DIR__ . '/InterlanguageCentralExtensionPurgeJob.php';
@@ -78,31 +79,5 @@ function wfInterlanguageExtension( $parser ) {
 	return true;
 }
 
-$wgHooks['ArticleDeleteComplete'][] = function (
-	WikiPage $wikiPage, User $user, string $reason, int $id, Content $content,
-	LogEntry $logEntry, int $archivedRevisionCount
-) {
-	global $wgInterlanguageExtensionDB, $wgLanguageCode;
-
-	if ( !isset( $wgInterlanguageExtensionDB ) || !$wgInterlanguageExtensionDB ) {
-		return true;
-	}
-	$title = $wikiPage->getTitle();
-	if ( !$title->isContentPage() ) {
-		return true;
-	}
-
-	$canonicalTitleText = InterlanguageExtension::getCanonicalTitleText( $title );
-
-	$foreignDbr = \MediaWiki\MediaWikiServices::getInstance()->getConnectionProvider()
-		->getPrimaryDatabase( $wgInterlanguageExtensionDB );
-	$foreignDbr->delete(
-		'interlanguage_links',
-		[
-			'ill_lang' => $wgLanguageCode,
-			'ill_title' => $canonicalTitleText,
-		],
-		__METHOD__
-	);
-	return true;
-};
+$wgHooks['PageDeleteComplete'][] = 'InterlanguageDependentLifecycle::onPageDeleteComplete';
+$wgHooks['PageMoveComplete'][] = 'InterlanguageDependentLifecycle::onPageMoveComplete';
