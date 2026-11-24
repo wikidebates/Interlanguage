@@ -14,3 +14,4 @@ $wgMessagesDirs['InterlanguageCentral'] = __DIR__ . '/i18n/central';
 
 $wgAutoloadClasses['InterlanguageCentralExtensionPurgeJob'] =
 	__DIR__ . '/InterlanguageCentralExtensionPurgeJob.php';
+$wgAutoloadClasses['InterlanguageEffectiveLangLinks'] = __DIR__ . '/api/InterlanguageEffectiveLangLinks.php';
