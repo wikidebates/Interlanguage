@@ -90,6 +90,32 @@ It never renders or writes pages. Missing or stale parser properties must
 still be addressed by the coordinated cache migration and offline audit.
 Do not configure both overrides.
 
+## Automatic same-title mappings and invalidation
+
+A same-title fallback never overwrites a previously stored mapping. An
+explicit native match (including an existing local redirect match) requires
+no additional supplemental write. If the central group already has a
+different translation in this edition, do not infer a competing relation
+merely because a local page has the same title.
+
+On dependent wikis, an opt-in setting enables invalidation of the central
+page and the other existing peers when a new automatic mapping is committed:
+
+```php
+$wgInterlanguageExtensionNotifyFallbackChanges = true;
+```
+
+The job is enqueued on the dependent wiki after the database commit. Its
+normal job runner must process purgeDependentWikis, and each relevant
+interwiki prefix must have a working purge API endpoint. Verify those
+conditions before activation. No remote request is made by the parsing
+hook; unchanged mappings do not generate jobs. This preserves the existing
+historical parse-time discovery of same-title mappings, not an editorial
+proof of translation equivalence. The ordinary purge only invalidates
+MediaWiki rendering caches; it does not itself guarantee that persisted
+page properties or custom external HTML caches have been rebuilt. The
+offline mapping audit remains necessary.
+
 ## Architecture
 
 - Central mode combines native language links and the central mapping table;
@@ -107,7 +133,7 @@ and schema caveats above for the current code.
 
 ## Tests
 
-The autonomous CI runs PHP 8.4 syntax checks and all six existing isolated
+The autonomous CI runs PHP 8.4 syntax checks and all seven isolated
 regression scripts:
 
 ```sh

@@ -27,6 +27,7 @@ $wgInterlanguageExtensionApiUrl = false;
 $wgInterlanguageExtensionInterwiki = "";
 $wgInterlanguageExtensionSort = 'none';
 $wgInterlanguageExtensionSortPrepend = false;
+$wgInterlanguageExtensionNotifyFallbackChanges = false;
 
 $wgExtensionCredits['parserhook'][] = array(
 	'path'			=> __FILE__,
@@ -42,6 +43,8 @@ $wgExtensionMessagesFiles['InterlanguageMagic'] = dirname(__FILE__) . '/Interlan
 $wgAutoloadClasses['InterlanguageExtension'] = dirname(__FILE__) . '/InterlanguageExtension.php';
 $wgAutoloadLocalClasses['ApiQueryLangLinks'] = dirname(__FILE__) . '/api/ApiQueryLangLinks.php';
 $wgAutoloadClasses['InterlanguageEffectiveLangLinks'] = __DIR__ . '/api/InterlanguageEffectiveLangLinks.php';
+$wgAutoloadClasses['InterlanguageCentralExtensionPurgeJob'] = __DIR__ . '/InterlanguageCentralExtensionPurgeJob.php';
+$wgJobClasses['purgeDependentWikis'] = 'InterlanguageCentralExtensionPurgeJob';
 $wgHooks['ParserFirstCallInit'][] = 'wfInterlanguageExtension';
 $wgResourceModules['ext.Interlanguage'] = array(
 	'styles' => 'modules/interlanguage.css',
