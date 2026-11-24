@@ -1,0 +1,108 @@
+name: Import Interlanguage history (one-time migration)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/import-history.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: interlanguage-history-import
+  cancel-in-progress: false
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Extract the original history
+        shell: bash
+        env:
+          SOURCE_COMMIT: f0e2bf8a7fd3d903c7ac237fe76aa455de74e6bd
+          EXPECTED_TREE: 3efd6932cb1eeb2193f3f447641c328ea3832c97
+        run: |
+          set -euo pipefail
+          git clone --no-checkout --filter=blob:none --single-branch --branch main https://github.com/wikidebates/wikidebates-mediawiki-farm.git "$RUNNER_TEMP/farm"
+          cd "$RUNNER_TEMP/farm"
+          git cat-file -e "$SOURCE_COMMIT^{commit}"
+          test "$(git rev-parse "$SOURCE_COMMIT:extensions/Interlanguage")" = "$EXPECTED_TREE"
+          split=$(git subtree split --quiet --prefix=extensions/Interlanguage "$SOURCE_COMMIT")
+          test "$(git rev-parse "$split^{tree}")" = "$EXPECTED_TREE"
+          git init --initial-branch=extracted "$RUNNER_TEMP/extracted"
+          git -C "$RUNNER_TEMP/extracted" fetch --no-tags "$RUNNER_TEMP/farm" "$split"
+          git -C "$RUNNER_TEMP/extracted" checkout -q -B extracted FETCH_HEAD
+          git -C "$RUNNER_TEMP/extracted" fsck --full
+          test "$(git -C "$RUNNER_TEMP/extracted" rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          git -C "$RUNNER_TEMP/extracted" log --format='%h %as %s'
+      - name: Scan all extracted history for secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none -v "$RUNNER_TEMP/extracted:/repo:ro" ghcr.io/gitleaks/gitleaks:v8.24.3 git --log-opts="--all" --redact=100 --no-banner /repo
+      - name: Package audited history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C "$RUNNER_TEMP/extracted" bundle create "$RUNNER_TEMP/interlanguage.bundle" refs/heads/extracted
+          git -C "$RUNNER_TEMP/extracted" bundle verify "$RUNNER_TEMP/interlanguage.bundle"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: interlanguage-history
+          path: ${{ runner.temp }}/interlanguage.bundle
+          retention-days: 3
+          if-no-files-found: error
+
+  test:
+    needs: extract
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: interlanguage-history
+          path: ${{ runner.temp }}/import
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          coverage: none
+      - name: Lint and run the six existing smoke tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --branch extracted "$RUNNER_TEMP/import/interlanguage.bundle" "$RUNNER_TEMP/test"
+          cd "$RUNNER_TEMP/test"
+          test "$(git rev-parse HEAD^{tree})" = 3efd6932cb1eeb2193f3f447641c328ea3832c97
+          php --version
+          find . -type f -name '*.php' -print0 | xargs -0 -n 1 php -l
+          for test in tests/*SmokeTest.php; do
+            php "$test"
+          done
+
+  publish:
+    needs: [extract, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: interlanguage-history
+          path: ${{ runner.temp }}/import
+      - name: Publish the audited history without changing main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git bundle verify "$RUNNER_TEMP/import/interlanguage.bundle"
+          git fetch --no-tags "$RUNNER_TEMP/import/interlanguage.bundle" refs/heads/extracted
+          split=$(git rev-parse FETCH_HEAD)
+          test "$(git rev-parse "$split^{tree}")" = 3efd6932cb1eeb2193f3f447641c328ea3832c97
+          git push origin "$split:refs/heads/import/interlanguage-history"
+          printf 'Imported commit: %s\n' "$split"
