@@ -29,48 +29,83 @@ class InterlanguageCentralExtension {
 		return "";
 	}
 
+	/** @var WeakMap<object,InterlanguageCentralExtensionPurgeJob>|null */
+	private static ?WeakMap $pendingPurges = null;
+
 	/**
-	 * Trigger purge job when interlanguage links change
+	 * Capture the effective group before the core updates its langlinks.
+	 * MediaWiki 1.43 ParserOutput returns a list of "language:title" strings.
+	 * Keep the first link for a language, like core's LangLinksTable.
 	 */
 	public static function onLinksUpdate( $linksUpdate ) {
+		global $wgLanguageCode;
 
 		$title = $linksUpdate->getTitle();
-		if ( !$title instanceof Title ) {
+		$parserOutput = $linksUpdate->getParserOutput();
+		if ( !$title instanceof Title || !$parserOutput instanceof ParserOutput ) {
 			return true;
 		}
 
-		$oldILL = self::getILL( DB_REPLICA, $title );
+		self::$pendingPurges ??= new WeakMap();
+		unset( self::$pendingPurges[$linksUpdate] );
 
-		if ( method_exists( $linksUpdate, 'getInterlanguageLinks' ) ) {
-			$newILL = $linksUpdate->getInterlanguageLinks();
-		} else {
-			$parserOutput = $linksUpdate->getParserOutput();
-			$newILL = $parserOutput instanceof ParserOutput
-				? $parserOutput->getLanguageLinks()
-				: [];
-		}
-
-		if ( !is_array( $newILL ) ) {
-			$newILL = [];
-		}
-
-		foreach ( $newILL as $k => $v ) {
-			if ( !is_array( $v ) ) {
-				$newILL[$k] = [ $v => true ];
+		$oldNative = self::getILL( DB_PRIMARY, $title );
+		unset( $oldNative[$wgLanguageCode] );
+		$newNative = [];
+		foreach ( $parserOutput->getLanguageLinks() as $link ) {
+			if ( !is_string( $link ) || !str_contains( $link, ':' ) ) {
+				continue;
+			}
+			[ $lang, $target ] = explode( ':', $link, 2 );
+			if ( $lang !== '' && $target !== '' && $lang !== $wgLanguageCode ) {
+				$newNative[$lang] ??= [ $target => true ];
 			}
 		}
-
-		if (
-			count( array_udiff_assoc( $oldILL, $newILL, [ self::class, 'arrayCompareKeys' ] ) ) ||
-			count( array_udiff_assoc( $newILL, $oldILL, [ self::class, 'arrayCompareKeys' ] ) )
-		) {
-			$ill = array_merge_recursive( $oldILL, $newILL );
-			$job = new InterlanguageCentralExtensionPurgeJob( $title, [ 'ill' => $ill ] );
-			MediaWikiServices::getInstance()
-				->getJobQueueGroup()
-				->push( $job );
+		ksort( $oldNative, SORT_STRING );
+		ksort( $newNative, SORT_STRING );
+		if ( $oldNative === $newNative ) {
+			return true;
 		}
 
+		// All peers, including supplemental ones, may have gained or lost
+		// a translation. Native links take precedence in both groups.
+		$db = MediaWikiServices::getInstance()->getConnectionProvider()->getPrimaryDatabase();
+		$supplemental = [];
+		foreach ( $db->select(
+			'interlanguage_links',
+			[ 'ill_lang', 'ill_title' ],
+			[ 'ill_from' => $title->getArticleID() ],
+			__METHOD__
+		) as $row ) {
+			if ( $row->ill_lang !== $wgLanguageCode ) {
+				$supplemental[$row->ill_lang][$row->ill_title] = true;
+			}
+		}
+		$before = $oldNative + $supplemental;
+		$after = $newNative + $supplemental;
+		ksort( $before, SORT_STRING );
+		ksort( $after, SORT_STRING );
+		if ( $before === $after ) {
+			return true;
+		}
+
+		$affected = $before;
+		foreach ( $after as $lang => $targets ) {
+			$affected[$lang] = ( $affected[$lang] ?? [] ) + $targets;
+		}
+		self::$pendingPurges[$linksUpdate] = new InterlanguageCentralExtensionPurgeJob(
+			$title, [ 'ill' => $affected ]
+		);
+		return true;
+	}
+
+	/** Only enqueue once core has committed the link-table update. */
+	public static function onLinksUpdateComplete( $linksUpdate, $ticket ) {
+		if ( self::$pendingPurges !== null && isset( self::$pendingPurges[$linksUpdate] ) ) {
+			$job = self::$pendingPurges[$linksUpdate];
+			unset( self::$pendingPurges[$linksUpdate] );
+			MediaWikiServices::getInstance()->getJobQueueGroup()->push( $job );
+		}
 		return true;
 	}
 
