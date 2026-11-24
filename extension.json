@@ -17,6 +17,7 @@
 	"Hooks": {
 		"ParserFirstCallInit": "InterlanguageCentralExtension::onParserFirstCallInit",
 		"LinksUpdate": "InterlanguageCentralExtension::onLinksUpdate",
+		"LinksUpdateComplete": "InterlanguageCentralExtension::onLinksUpdateComplete",
 		"LanguageLinks": "InterlanguageCentralExtension::onLanguageLinks"
 	},
 
