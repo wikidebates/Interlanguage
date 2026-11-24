@@ -89,6 +89,10 @@ class InterlanguageExtension {
 		if ( !isset( $wgInterlanguageExtensionDB ) || !$wgInterlanguageExtensionDB ) {
 			return true;
 		}
+		// The dependent hook must never write a mapping for the central language.
+		if ( $wgLanguageCode === rtrim( $wgInterlanguageExtensionInterwiki, ':' ) ) {
+			return true;
+		}
 		if ( !$title->canExist() ) {
 			return true;
 		}
@@ -155,7 +159,7 @@ class InterlanguageExtension {
 		if ( $row ) {
 			$pageId = $row->page_id;
 			$parserOutput->addModules( [ 'ext.Interlanguage' ] );
-			$a = $this->readLinksFromDB( $foreignDB, $pageId );
+			$a = $this->readLinksFromCentralDB( $foreignDB, $pageId );
 
 			$foreignLang = substr( $wgInterlanguageExtensionInterwiki, 0, -1 );
 			$foreignTitle = null;
@@ -294,7 +298,7 @@ class InterlanguageExtension {
 				$res = $res->fetchObject();
 			}
 
-			$a['query']['pages'][0] = [ 'langlinks' => $this->readLinksFromDB( $this->foreignDbr, $res->page_id ) ];
+			$a['query']['pages'][0] = [ 'langlinks' => $this->readLinksFromCentralDB( $this->foreignDbr, $res->page_id ) ];
 		}
 
 		return $a;
@@ -610,6 +614,35 @@ THEEND;
 			$a[] = [ 'lang' => $row->ll_lang, '*' => $row->ll_title ];
 		}
 		return $a;
+	}
+
+	/**
+	 * Read effective central mappings. Native links take precedence, exactly
+	 * as in the central LanguageLinks hook. Legacy central self-mappings
+	 * must not override the source page's actual title.
+	 * Only use this for the central database, not preservePageLinks().
+	 */
+	function readLinksFromCentralDB( $dbr, $articleid ): array {
+		global $wgInterlanguageExtensionInterwiki;
+		$centralLang = rtrim( (string)$wgInterlanguageExtensionInterwiki, ':' );
+		$links = [];
+		foreach ( $this->readLinksFromDB( $dbr, $articleid ) as $link ) {
+			if ( $link['lang'] !== $centralLang ) {
+				$links[$link['lang']] = $link;
+			}
+		}
+		$res = $dbr->select(
+			'interlanguage_links',
+			[ 'ill_lang', 'ill_title' ],
+			[ 'ill_from' => $articleid ],
+			__METHOD__
+		);
+		foreach ( $res as $row ) {
+			if ( $row->ill_lang !== $centralLang && !isset( $links[$row->ill_lang] ) ) {
+				$links[$row->ill_lang] = [ 'lang' => $row->ill_lang, '*' => $row->ill_title ];
+			}
+		}
+		return array_values( $links );
 	}
 
 	/**
