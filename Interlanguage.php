@@ -41,6 +41,7 @@ $wgMessagesDirs['Interlanguage'] = __DIR__ . '/i18n/interlanguage';
 $wgExtensionMessagesFiles['InterlanguageMagic'] = dirname(__FILE__) . '/Interlanguage.i18n.magic.php';
 $wgAutoloadClasses['InterlanguageExtension'] = dirname(__FILE__) . '/InterlanguageExtension.php';
 $wgAutoloadLocalClasses['ApiQueryLangLinks'] = dirname(__FILE__) . '/api/ApiQueryLangLinks.php';
+$wgAutoloadClasses['InterlanguageEffectiveLangLinks'] = __DIR__ . '/api/InterlanguageEffectiveLangLinks.php';
 $wgHooks['ParserFirstCallInit'][] = 'wfInterlanguageExtension';
 $wgResourceModules['ext.Interlanguage'] = array(
 	'styles' => 'modules/interlanguage.css',
