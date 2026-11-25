@@ -9,14 +9,6 @@ use MediaWiki\Title\Title;
 
 class InterlanguageCentralExtension {
 
-	/** The auxiliary table is central-only; the dependent legacy loader has no schema hook. */
-	public static function onLoadExtensionSchemaUpdates( $updater ) {
-		if ( $updater->getDB()->getType() === 'mysql' ) {
-			$updater->addExtensionTable( 'interlanguage_title_keys', __DIR__ . '/sql/interlanguage_title_keys.sql' );
-		}
-		return true;
-	}
-
 	/**
 	 * Register parser function
 	 */
@@ -41,6 +33,8 @@ class InterlanguageCentralExtension {
 
 	/** @var WeakMap<object,InterlanguageCentralExtensionPurgeJob>|null */
 	private static ?WeakMap $pendingPurges = null;
+	/** @var WeakMap<object,string[]>|null */
+	private static ?WeakMap $pendingInvalidations = null;
 
 	/**
 	 * Capture the effective group before the core updates its langlinks.
@@ -58,6 +52,8 @@ class InterlanguageCentralExtension {
 
 		self::$pendingPurges ??= new WeakMap();
 		unset( self::$pendingPurges[$linksUpdate] );
+		self::$pendingInvalidations ??= new WeakMap();
+		unset( self::$pendingInvalidations[$linksUpdate] );
 
 		$db = MediaWikiServices::getInstance()->getConnectionProvider()->getPrimaryDatabase();
 		$pageId = (int)$linksUpdate->getPageId();
@@ -76,6 +72,7 @@ class InterlanguageCentralExtension {
 			$supplemental = self::readSupplemental( $db, $pageId );
 			$db->delete( 'interlanguage_links', [ 'ill_from' => $pageId ], __METHOD__ );
 			$affected = $oldNative + $supplemental;
+			self::$pendingInvalidations[$linksUpdate] = array_keys( $affected );
 			if ( $affected ) {
 				self::$pendingPurges[$linksUpdate] = new InterlanguageCentralExtensionPurgeJob(
 					$title, [ 'ill' => $affected ]
@@ -101,13 +98,13 @@ class InterlanguageCentralExtension {
 
 		// All peers, including supplemental ones, may have gained or lost
 		// a translation. Native links take precedence in both groups.
-		if ( $GLOBALS['wgInterlanguageMaintainTitleKeys'] ?? false ) {
-			foreach ( $newNative as $lang => $targets ) {
-				foreach ( array_diff_key( $targets, $oldNative[$lang] ?? [] ) as $target => $unused ) {
-					InterlanguageTitleKeys::remember( $db, (string)$lang, (string)$target );
-				}
+		$changed = [];
+		foreach ( array_unique( array_merge( array_keys( $oldNative ), array_keys( $newNative ) ) ) as $lang ) {
+			if ( ( $oldNative[$lang] ?? [] ) !== ( $newNative[$lang] ?? [] ) ) {
+				$changed[] = (string)$lang;
 			}
 		}
+		self::$pendingInvalidations[$linksUpdate] = $changed;
 		$supplemental = self::readSupplemental( $db, $pageId );
 		$before = $oldNative + $supplemental;
 		$after = $newNative + $supplemental;
@@ -129,6 +126,14 @@ class InterlanguageCentralExtension {
 
 	/** Only enqueue once core has committed the link-table update. */
 	public static function onLinksUpdateComplete( $linksUpdate, $ticket ) {
+		if ( self::$pendingInvalidations !== null && isset( self::$pendingInvalidations[$linksUpdate] ) ) {
+			$languages = self::$pendingInvalidations[$linksUpdate];
+			unset( self::$pendingInvalidations[$linksUpdate] );
+			$db = MediaWikiServices::getInstance()->getConnectionProvider()->getPrimaryDatabase();
+			foreach ( $languages as $language ) {
+				InterlanguageReverseLookup::invalidate( $db, (string)$language );
+			}
+		}
 		if ( self::$pendingPurges !== null && isset( self::$pendingPurges[$linksUpdate] ) ) {
 			$job = self::$pendingPurges[$linksUpdate];
 			unset( self::$pendingPurges[$linksUpdate] );
