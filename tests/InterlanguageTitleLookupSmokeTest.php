@@ -53,7 +53,7 @@ namespace MediaWiki {
 			return 'en';
 		}
 		public function isCapitalized( int $ns ): bool {
-			return \Title::$capitalize;
+			return \MediaWiki\Title\Title::$capitalize;
 		}
 		public function get( string $name ) {
 			return $name === 'OverrideUcfirstCharacters' ? [] : 0;
