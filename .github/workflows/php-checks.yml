@@ -39,8 +39,8 @@
 					"run": "set -euo pipefail\ngit ls-files -z -- '*.php' | xargs -0 -n 1 php -l"
 				},
 				{
-					"name": "Run all nine isolated regression suites",
-					"run": "set -euo pipefail\ntests=(tests/*SmokeTest.php)\ntest \"${#tests[@]}\" -eq 9\nfor test in \"${tests[@]}\"; do\n\tphp \"$test\"\ndone"
+					"name": "Run all eight isolated regression suites",
+					"run": "set -euo pipefail\ntests=(tests/*SmokeTest.php)\ntest \"${#tests[@]}\" -eq 8\nfor test in \"${tests[@]}\"; do\n\tphp \"$test\"\ndone"
 				}
 			]
 		}

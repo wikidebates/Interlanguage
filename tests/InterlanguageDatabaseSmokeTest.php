@@ -103,6 +103,14 @@ namespace {
 			return true;
 		}
 
+		public function isExternal(): bool {
+			return false;
+		}
+
+		public function getFragment(): string {
+			return '';
+		}
+
 		public function getNamespace(): int {
 			return 0;
 		}
@@ -116,6 +124,7 @@ namespace {
 		}
 	}
 
+	define( 'NS_MAIN', 0 );
 	require_once dirname( __DIR__ ) . '/InterlanguageExtension.php';
 
 	function assertInterlanguageDatabase( bool $condition, string $message ): void {

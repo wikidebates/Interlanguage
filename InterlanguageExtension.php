@@ -120,14 +120,14 @@ class InterlanguageExtension {
 			// A truncated alias search cannot establish an unambiguous mapping.
 			return true;
 		}
-		$candidates = $this->findCentralNativeCandidates( $foreignDB, $targets, $wgLanguageCode );
+		$candidates = self::findCentralCandidates( $foreignDB, $targets, $wgLanguageCode, true );
 		if ( $candidates === null || count( $candidates ) > 1 ) {
 			return true;
 		}
-		if ( !$candidates && ( $GLOBALS['wgInterlanguageUseTitleKeys'] ?? false ) ) {
+		if ( !$candidates ) {
 			// A native claim always wins over a supplemental claim, even
 			// when the latter belongs to a different central page.
-			$candidates = InterlanguageTitleKeys::findCandidates( $foreignDB, $targets, $wgLanguageCode, false );
+			$candidates = self::findCentralCandidates( $foreignDB, $targets, $wgLanguageCode, false );
 			if ( $candidates === null || count( $candidates ) > 1 ) {
 				return true;
 			}
@@ -159,17 +159,10 @@ class InterlanguageExtension {
 				// Never let incidental parsing overwrite an existing mapping.
 				// A different page in this edition may already be the translation.
 				$existing = $this->findLanguageTarget( $a, $wgLanguageCode );
-				if ( $existing !== null && !$this->matchesLocalTitle( $existing, $title ) ) {
+				if ( $existing !== null && !self::matchesLocalTitle( $existing, $title ) ) {
 					return true;
 				}
 				if ( $existing === null ) {
-					if ( ( $GLOBALS['wgInterlanguageMaintainTitleKeys'] ?? false ) ||
-						( $GLOBALS['wgInterlanguageUseTitleKeys'] ?? false )
-					) {
-						// Remember the raw spelling before publishing the mapping.
-						// A key with no live mapping is harmless.
-						InterlanguageTitleKeys::remember( $foreignDB, $wgLanguageCode, $canonicalTitleText );
-					}
 					$foreignDB->insert(
 						'interlanguage_links',
 						[
@@ -186,7 +179,7 @@ class InterlanguageExtension {
 						// must not be replaced, or misrepresented in this output.
 						$a = $this->readLinksFromCentralDB( $foreignDB, $pageId );
 						$existing = $this->findLanguageTarget( $a, $wgLanguageCode );
-						if ( $existing === null || !$this->matchesLocalTitle( $existing, $title ) ) {
+						if ( $existing === null || !self::matchesLocalTitle( $existing, $title ) ) {
 							return true;
 						}
 					} else {
@@ -236,7 +229,10 @@ class InterlanguageExtension {
 	public function getLocalRedirectTitles( $db, Title $title ): ?array {
 		$queue = [ [ $title, 0 ] ];
 		$seen = [ $title->getNamespace() . ':' . $title->getDBkey() => true ];
-		$targets = [ self::getCanonicalTitleText( $title ) ];
+		$targets = self::getLookupTitleTexts( $title );
+		if ( !$targets ) {
+			return null;
+		}
 
 		for ( $i = 0; $i < count( $queue ); $i++ ) {
 			[ $current, $depth ] = $queue[$i];
@@ -269,7 +265,11 @@ class InterlanguageExtension {
 					return null;
 				}
 				$seen[$key] = true;
-				$targets[] = self::getCanonicalTitleText( $alias );
+				$spellings = self::getLookupTitleTexts( $alias );
+				if ( !$spellings ) {
+					return null;
+				}
+				$targets = array_merge( $targets, $spellings );
 				$queue[] = [ $alias, $depth + 1 ];
 			}
 		}
@@ -277,27 +277,74 @@ class InterlanguageExtension {
 	}
 
 	/**
-	 * The native source-language key is unique. Two distinct rows are enough
-	 * to establish ambiguity. Preserve the original indexed title predicates.
+	 * Deliberately limited spellings: canonical/local namespace, spaces or
+	 * underscores, and an optional space after a real namespace separator.
+	 * Never enumerate arbitrary aliases, capitalization or whitespace.
+	 * Verify generated spellings with the receiving wiki's title parser.
+	 *
+	 * @return string[]
 	 */
-	private function findCentralNativeCandidates( $db, array $targets, string $language ): ?array {
-		if ( $GLOBALS['wgInterlanguageUseTitleKeys'] ?? false ) {
-			return InterlanguageTitleKeys::findCandidates( $db, $targets, $language, true );
+	public static function getLookupTitleTexts( Title $title ): array {
+		$texts = array_unique( [ $title->getText(), $title->getDBkey() ] );
+		if ( $title->getNamespace() === NS_MAIN ) {
+			$targets = $texts;
+		} else {
+			$namespaces = MediaWikiServices::getInstance()->getNamespaceInfo()->getCanonicalNamespaces();
+			$prefixes = [];
+			foreach ( [ $namespaces[$title->getNamespace()] ?? '', $title->getNsText() ] as $prefix ) {
+				if ( $prefix !== '' ) {
+					$prefixes[] = str_replace( '_', ' ', $prefix );
+					$prefixes[] = str_replace( ' ', '_', $prefix );
+				}
+			}
+			$targets = [];
+			foreach ( array_unique( $prefixes ) as $prefix ) {
+				foreach ( $texts as $text ) {
+					$targets[] = $prefix . ':' . $text;
+					$targets[] = $prefix . ': ' . $text;
+				}
+			}
 		}
-		$rows = $db->select(
-			[ 'langlinks', 'page' ],
-			[ 'page_id', 'page_namespace', 'page_title', 'page_is_redirect' ],
-			[
-				'll_title' => $targets,
-				'll_lang' => $language,
-				'page_id = ll_from',
-			],
-			__METHOD__,
-			[ 'LIMIT' => 2 ]
-		);
+		return array_values( array_filter( array_unique( $targets ), static fn ( $target ) =>
+			self::matchesLocalTitle( $target, $title )
+		) );
+	}
+
+	/**
+	 * Indexed exact lookup only. The native/supplemental source-language
+	 * key is unique, so two rows prove ambiguity during normal rendering.
+	 * Lifecycle callers may collect up to 256 source IDs instead.
+	 * Native-shadowed supplemental rows cannot claim a translation.
+	 *
+	 * @return array<int,object>|null Null means an incomplete lookup.
+	 */
+	public static function findCentralCandidates(
+		$db, array $targets, string $language, bool $native, bool $collectAll = false, bool $includeShadowed = false
+	): ?array {
+		if ( !$targets ) {
+			return null;
+		}
+		$limit = $collectAll ? 256 : 2;
+		$prefix = $native ? 'll' : 'ill';
+		$tables = [ 'mapping' => $native ? 'langlinks' : 'interlanguage_links', 'sourcepage' => 'page' ];
+		$joins = [ 'sourcepage' => [ 'JOIN', "sourcepage.page_id = mapping.{$prefix}_from" ] ];
+		$conditions = [ "mapping.{$prefix}_lang" => $language, "mapping.{$prefix}_title" => $targets ];
+		if ( !$native && !$includeShadowed ) {
+			$tables['native'] = 'langlinks';
+			$joins['native'] = [ 'LEFT JOIN', 'native.ll_from = mapping.ill_from AND native.ll_lang = mapping.ill_lang' ];
+			$conditions['native.ll_from'] = null;
+		}
+		$rows = $db->select( $tables, [
+			'page_id' => 'sourcepage.page_id', 'page_namespace' => 'sourcepage.page_namespace',
+			'page_title' => 'sourcepage.page_title', 'page_is_redirect' => 'sourcepage.page_is_redirect',
+			'target' => "mapping.{$prefix}_title",
+		], $conditions, __METHOD__, [ 'LIMIT' => $collectAll ? $limit + 1 : $limit ], $joins );
 		$candidates = [];
 		foreach ( $rows as $row ) {
 			$candidates[(int)$row->page_id] = $row;
+			if ( $collectAll && count( $candidates ) > $limit ) {
+				return null;
+			}
 		}
 		return $candidates;
 	}
@@ -312,7 +359,7 @@ class InterlanguageExtension {
 		return null;
 	}
 
-	private function matchesLocalTitle( string $target, Title $title ): bool {
+	private static function matchesLocalTitle( string $target, Title $title ): bool {
 		$other = Title::newFromText( $target );
 		return $other !== null && !$other->isExternal() && $other->getFragment() === '' &&
 			$other->getNamespace() === $title->getNamespace() &&
