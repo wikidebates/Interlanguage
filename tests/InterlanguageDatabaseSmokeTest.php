@@ -103,6 +103,14 @@ namespace {
 			return true;
 		}
 
+		public function isExternal(): bool {
+			return false;
+		}
+
+		public function getFragment(): string {
+			return '';
+		}
+
 		public function getNamespace(): int {
 			return 0;
 		}
@@ -117,6 +125,8 @@ namespace {
 	}
 
 	require_once dirname( __DIR__ ) . '/InterlanguageExtension.php';
+	class_alias( Title::class, 'MediaWiki\Title\Title' );
+	require_once dirname( __DIR__ ) . '/InterlanguageTitleLookup.php';
 
 	function assertInterlanguageDatabase( bool $condition, string $message ): void {
 		if ( !$condition ) {

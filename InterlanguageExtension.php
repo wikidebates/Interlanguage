@@ -120,14 +120,14 @@ class InterlanguageExtension {
 			// A truncated alias search cannot establish an unambiguous mapping.
 			return true;
 		}
-		$candidates = $this->findCentralNativeCandidates( $foreignDB, $targets, $wgLanguageCode );
+		$candidates = InterlanguageTitleLookup::findCandidates( $foreignDB, $targets, $wgLanguageCode, true );
 		if ( $candidates === null || count( $candidates ) > 1 ) {
 			return true;
 		}
-		if ( !$candidates && ( $GLOBALS['wgInterlanguageUseTitleKeys'] ?? false ) ) {
+		if ( !$candidates ) {
 			// A native claim always wins over a supplemental claim, even
 			// when the latter belongs to a different central page.
-			$candidates = InterlanguageTitleKeys::findCandidates( $foreignDB, $targets, $wgLanguageCode, false );
+			$candidates = InterlanguageTitleLookup::findCandidates( $foreignDB, $targets, $wgLanguageCode, false );
 			if ( $candidates === null || count( $candidates ) > 1 ) {
 				return true;
 			}
@@ -163,13 +163,6 @@ class InterlanguageExtension {
 					return true;
 				}
 				if ( $existing === null ) {
-					if ( ( $GLOBALS['wgInterlanguageMaintainTitleKeys'] ?? false ) ||
-						( $GLOBALS['wgInterlanguageUseTitleKeys'] ?? false )
-					) {
-						// Remember the raw spelling before publishing the mapping.
-						// A key with no live mapping is harmless.
-						InterlanguageTitleKeys::remember( $foreignDB, $wgLanguageCode, $canonicalTitleText );
-					}
 					$foreignDB->insert(
 						'interlanguage_links',
 						[
@@ -274,32 +267,6 @@ class InterlanguageExtension {
 			}
 		}
 		return array_values( array_unique( $targets ) );
-	}
-
-	/**
-	 * The native source-language key is unique. Two distinct rows are enough
-	 * to establish ambiguity. Preserve the original indexed title predicates.
-	 */
-	private function findCentralNativeCandidates( $db, array $targets, string $language ): ?array {
-		if ( $GLOBALS['wgInterlanguageUseTitleKeys'] ?? false ) {
-			return InterlanguageTitleKeys::findCandidates( $db, $targets, $language, true );
-		}
-		$rows = $db->select(
-			[ 'langlinks', 'page' ],
-			[ 'page_id', 'page_namespace', 'page_title', 'page_is_redirect' ],
-			[
-				'll_title' => $targets,
-				'll_lang' => $language,
-				'page_id = ll_from',
-			],
-			__METHOD__,
-			[ 'LIMIT' => 2 ]
-		);
-		$candidates = [];
-		foreach ( $rows as $row ) {
-			$candidates[(int)$row->page_id] = $row;
-		}
-		return $candidates;
 	}
 
 	/** @param array $links Effective links read from the central database. */

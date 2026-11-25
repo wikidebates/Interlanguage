@@ -2,7 +2,6 @@
 
 $wgInterlanguageCentralExtensionIndexUrl = "";
 $wgInterlanguagePurgeLinkUpdateLanguages = [];
-$wgInterlanguageMaintainTitleKeys = false;
 
 $wgExtensionCredits['parserhook'][] = [
 	'name' => 'Interlanguage Central',

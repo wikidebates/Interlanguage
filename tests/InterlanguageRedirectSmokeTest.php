@@ -49,7 +49,6 @@ namespace {
 	class RedirectTestDatabase {
 		public array $pages = [];
 		public array $redirects = [];
-		public array $native = [];
 		public int $calls = 0;
 
 		public function page( int $id, int $ns, string $key, bool $redirect = false ): void {
@@ -79,20 +78,6 @@ namespace {
 
 		public function select( $tables, $fields, $conditions, $caller, $options ): array {
 			$this->calls++;
-			if ( $tables === [ 'langlinks', 'page' ] ) {
-				if ( $options !== [ 'LIMIT' => 2 ] || $conditions['ll_lang'] !== 'en' ||
-					!is_array( $conditions['ll_title'] ) || !in_array( 'page_id = ll_from', $conditions, true )
-				) {
-					throw new \RuntimeException( 'Unexpected native reverse query' );
-				}
-				$matches = [];
-				foreach ( $this->native as $target => $page ) {
-					if ( in_array( $target, $conditions['ll_title'], true ) ) {
-						$matches[] = $page;
-					}
-				}
-				return array_slice( $matches, 0, 2 );
-			}
 			if ( $tables !== [ 'redirect', 'page' ] || !isset( $conditions['rd_namespace'], $conditions['rd_title'] ) ||
 				!in_array( 'rd_from = page_id', $conditions, true ) || $conditions['page_is_redirect'] !== 1
 			) {
@@ -177,11 +162,6 @@ namespace {
 		'Reverse aliases must not cross namespaces by title text alone' );
 	verifyRedirect( $incoming->invoke( $extension, $db, new Title( 0, 'Long_17' ) ) === null,
 		'Overlong reverse chains must be reported as incomplete' );
-
-	$native = new \ReflectionMethod( \InterlanguageExtension::class, 'findCentralNativeCandidates' );
-	$db->native = [ 'Template:Destination' => $db->pages['10:Destination'], 'Origin' => $db->pages['0:Destination'] ];
-	verifyRedirect( count( $native->invoke( $extension, $db, $targets, 'en' ) ) === 2,
-		'Direct and redirect matches can reveal competing native sources' );
 
 	$wide = new RedirectTestDatabase();
 	$wide->page( 1, 0, 'Target' );
