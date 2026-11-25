@@ -93,6 +93,14 @@ namespace MediaWiki {
 }
 
 namespace {
+	class InterlanguageReverseLookup {
+		public static array $invalidated = [];
+
+		public static function invalidate( $db, string $language ): void {
+			self::$invalidated[] = $language;
+		}
+	}
+
 	define( 'DB_PRIMARY', 0 );
 	define( 'DB_REPLICA', 1 );
 
@@ -153,9 +161,10 @@ namespace {
 		] )
 	);
 	\InterlanguageCentralExtension::onLinksUpdate( $update );
-	assertInterlanguageCentral( $queue->jobs === [], 'Do not purge before link-table commit' );
+	assertInterlanguageCentral( $queue->jobs === [] && InterlanguageReverseLookup::$invalidated === [], 'Do not purge or invalidate before link-table commit' );
 	\InterlanguageCentralExtension::onLinksUpdateComplete( $update, null );
 	assertInterlanguageCentral( count( $queue->jobs ) === 1, 'Exactly one job after commit' );
+	assertInterlanguageCentral( InterlanguageReverseLookup::$invalidated === [ 'en', 'es', 'it' ], 'Invalidate changed languages after commit' );
 	$expected = [
 		'de' => [ 'Projekt:Test:2' => true ],
 		'en' => [ 'Old:Title' => true, 'New:Title' => true ],
@@ -167,7 +176,7 @@ namespace {
 		'Purge every affected peer, retaining colons and native precedence'
 	);
 	\InterlanguageCentralExtension::onLinksUpdateComplete( $update, null );
-	assertInterlanguageCentral( count( $queue->jobs ) === 1, 'Completion is idempotent' );
+	assertInterlanguageCentral( count( $queue->jobs ) === 1 && count( InterlanguageReverseLookup::$invalidated ) === 3, 'Completion is idempotent' );
 
 	$reads = $db->supplementalReads;
 	$unchanged = new InterlanguageCentralTestUpdate( $title,

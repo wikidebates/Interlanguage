@@ -4,7 +4,26 @@
  *
  * Run with: php extensions/Interlanguage/tests/InterlanguageDatabaseSmokeTest.php
  */
+namespace Wikimedia\Rdbms {
+	class Database {
+		public static function getCacheSetOptions( ...$dbs ): array {
+			return [];
+		}
+	}
+}
 namespace MediaWiki {
+	class TestReverseCache {
+		public function makeKey( ...$parts ): string {
+			return implode( ':', $parts );
+		}
+		public function makeGlobalKey( ...$parts ): string {
+			return implode( ':', $parts );
+		}
+		public function getWithSetCallback( $key, $ttl, $callback, $opts ) {
+			$setOpts = [];
+			return $callback( null, $ttl, $setOpts );
+		}
+	}
 	class InterlanguageTestDbResult implements \IteratorAggregate {
 		public function fetchObject() {
 			return false;
@@ -17,6 +36,10 @@ namespace MediaWiki {
 
 	class InterlanguageTestDatabase {
 		public int $selectCalls = 0;
+
+		public function getDomainID(): string {
+			return 'centralWiki';
+		}
 
 		public function select( $tables, $fields, $conditions, $caller ) {
 			$this->selectCalls++;
@@ -77,6 +100,10 @@ namespace MediaWiki {
 			return self::$instance ??= new self();
 		}
 
+		public function getMainWANObjectCache(): TestReverseCache {
+			return new TestReverseCache();
+		}
+
 		public function getConnectionProvider(): InterlanguageTestConnectionProvider {
 			return $this->provider;
 		}
@@ -103,6 +130,14 @@ namespace {
 			return true;
 		}
 
+		public function isExternal(): bool {
+			return false;
+		}
+
+		public function getFragment(): string {
+			return '';
+		}
+
 		public function getNamespace(): int {
 			return 0;
 		}
@@ -116,6 +151,7 @@ namespace {
 		}
 	}
 
+	require_once dirname( __DIR__ ) . '/InterlanguageReverseLookup.php';
 	require_once dirname( __DIR__ ) . '/InterlanguageExtension.php';
 
 	function assertInterlanguageDatabase( bool $condition, string $message ): void {

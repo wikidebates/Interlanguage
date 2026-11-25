@@ -127,8 +127,8 @@ Dependent moves and deletions use the primary local and central databases
 after the local change commits. Only direct verified supplemental rows can
 be deleted when a local page is gone; native langlinks are never changed.
 A move with a redirect preserves the old valid spelling. A move without a
-redirect can retarget a unique, non-shadowed supplemental row only when the
-normalized reader is active and no competing native or automatic claim is found; the old row is compared exactly and
+redirect can retarget a unique, non-shadowed supplemental row only when a
+fresh normalized lookup finds no competing native or automatic claim; the old row is compared exactly and
 deleted/inserted atomically, without requesting an additional UPDATE grant.
 A missing or incomplete index search, competing claims, and deleted file or
 MediaWiki message pages are not grounds for speculative remapping. The native
@@ -144,52 +144,46 @@ cleanup. As local and central databases have separate transactions, this
 is not a cross-database lock; audit discrepancies after simultaneous changes.
 No automatic recovery of deleted supplemental links on undeletion is promised.
 
-## Indexed normalized reverse lookup (optional, central SQL migration)
+## Normalized reverse lookup without a schema migration
 
-This mode recognizes legitimate target spellings without changing the raw
-`langlinks` or `interlanguage_links` values. The central dictionary indexes
-raw spellings by a coarse suffix key independent of namespace names.
-It never decides whether a colon is a namespace separator: the dependent
-wiki parses each live candidate with its own MediaWiki title parser and
-compares namespace number and DB key. Native mappings take precedence over
-supplemental mappings; ambiguous candidates and incomplete searches (more
-than 256 SQL candidates) do not create an automatic mapping. A supplemental
-row overridden by a native row for the same central source/language is
-excluded. Existing forward links are not rewritten, even in a conflicting
-group. No additional HTTP or foreign database access from the central wiki.
+The dependent wiki parses distinct raw spellings for its own language
+using MediaWiki's local title parser. A small dictionary in the existing
+WANObjectCache maps actual namespace/DB-key identities to alternate raw
+spellings. Ordinary canonical spellings are always queried directly and
+are not stored in the dictionary. Cold builds read only that language
+using the existing covering indexes on (ll_lang,ll_title) and
+(ill_lang,ill_title); warm lookups query current mapping rows by the
+original indexed language and title predicates. The dictionary never stores
+central page IDs or mappings, so an obsolete spelling cannot resurrect a
+removed row. Each candidate is parsed again locally. Native precedence,
+supplemental shadowing, ambiguity and bounded failure handling are
+preserved. Incomplete inventories (over 20,000 distinct rows across the
+two tables) or candidate sets over 256 fail closed. No new database table,
+SQL grant, configuration option, HTTP request or manual backfill is required.
 
-The table is append-only for spellings. Queries join the actual native or
-supplemental mapping, so deleting a mapping immediately makes its old key
-irrelevant. Central link updates and dependent fallback insertion remember
-new spellings before publishing them. Direct SQL inserts or changes to
-either mapping table bypass these hooks and must be followed by a verified
-backfill before enabling or continuing to rely on normalized lookup.
+Cache entries are receiver-local; a shared global WAN check key, based on
+the central database domain and target language, is touched after committed
+native or supplemental changes. There is no process-cache TTL override or
+stale grace period; entries expire in at most 120 seconds under normal
+cache operation. A shared, persistent WAN backend across the farm is
+necessary for immediate cross-wiki invalidation and good warm performance:
+verify this on the actual deployment before switching. With an empty or
+nonpersistent backend, lookup works but repeatedly builds the language
+dictionary, which is not a recommended production configuration. Separate
+backends or failed invalidations can leave newly introduced alternate
+spellings undiscovered until expiry; live rows still prevent resurrection
+of deleted mappings. New fallback associations and dependent move/delete
+reconciliation use fresh (uncached) spellings before any write, so a
+cached miss cannot justify an automatic data change. Concurrent edits
+across independent transactions are not serialized.
 
-Rollout on MySQL/MariaDB (disabled by default; no global cache rebuild):
-
-1. Create the central-only table from `sql/interlanguage_title_keys.sql`
-   (the central schema-update hook also registers it).
-2. After loading the extension, set `$wgInterlanguageMaintainTitleKeys = true;`
-   on the central wiki **and all dependent writers**. Leave
-   `$wgInterlanguageUseTitleKeys` false.
-3. From the MediaWiki root, on the central wiki only, run
-   `php maintenance/run.php ./extensions/Interlanguage/maintenance/buildTitleKeys.php --wiki=fr --apply`
-   and then repeat without `--apply` to verify zero missing keys. This
-   offline operation reads mapping rows and only inserts auxiliary keys.
-4. Enable `$wgInterlanguageUseTitleKeys = true;` on dependent wikis
-   after successful verification. A reader also maintains keys for its
-   own fallback inserts. The existing exact native lookup remains available
-   when the reader setting is false.
-5. Repeat the read-only coverage check after imports/direct SQL operations,
-   changes to core title normalization, and before switching readers on again.
-   If coverage is uncertain, disable the readers until it is restored.
-
-The central reader account needs SELECT on the new table; both central and
-dependent writer accounts need SELECT and INSERT there. No DELETE on the
-dictionary is necessary for normal operation. The extension does not grant
-SQL rights or alter the original mapping tables. The index changes candidate
-discovery, not the stored API titles or the canonical URL configuration
-used by WikiSEO.
+Direct SQL inserts and changes bypass cache hooks; invalidate the relevant
+language dictionary after such operations, or allow its short TTL to expire
+before relying on it. Rebuild no page caches globally. A previous optional
+interlanguage_title_keys table is no longer read or written; leave it
+untouched until the new code has been validated, then remove it separately
+if no older workers are using it. The former MaintainTitleKeys and
+UseTitleKeys options are obsolete and should not be added to LocalSettings.
 
 ## Targeted secondary-data refresh (optional)
 
@@ -235,8 +229,8 @@ pages prevents automatic discovery. Redirect pages cannot themselves create
 same-title mappings, and central redirect sources are not automatically
 treated as equivalent to their destinations. Ordinary pages add one indexed
 local redirect lookup compared with the former exact-match fast path; no
-HTTP requests or full-table scans are added. This change does not yet
-normalize all stored native title forms or index supplemental reverse links.
+HTTP requests or per-lookup full-table scans are added. See the normalized
+reverse lookup section for the bounded language-scoped cold-cache reads.
 
 ## Architecture
 

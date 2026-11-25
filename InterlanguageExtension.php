@@ -48,7 +48,7 @@ class InterlanguageExtension {
 		$titleText = $title->getText();
 		$titleNamespace = $title->getNamespace();
 		if ( $titleNamespace !== 0 ) {
-			$titleText = $canonicalNamespaces[$titleNamespace] . ":" . $titleText;
+			$titleText = ( $canonicalNamespaces[$titleNamespace] ?? $title->getNsText() ) . ":" . $titleText;
 		}
 		return $titleText;
 	}

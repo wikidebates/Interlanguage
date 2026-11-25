@@ -45,11 +45,13 @@ final class InterlanguageReverseLookup {
 		}, __METHOD__ );
 	}
 
-	private static function identity( string $raw ): ?string {
+	private static function parseTitle( string $raw ): ?Title {
 		$title = Title::newFromText( $raw );
-		if ( !$title || !$title->canExist() || $title->isExternal() || $title->getFragment() !== '' ) {
-			return null;
-		}
+		return $title && $title->canExist() && !$title->isExternal() && $title->getFragment() === ''
+			? $title : null;
+	}
+
+	private static function identity( Title $title ): string {
 		return $title->getNamespace() . ':' . $title->getDBkey();
 	}
 
@@ -66,9 +68,11 @@ final class InterlanguageReverseLookup {
 				if ( ++$scanned > self::MAX_SPELLINGS ) {
 					return null;
 				}
-				$identity = self::identity( $row->target );
-				if ( $identity !== null ) {
-					$index[$identity][$row->target] = true;
+				$title = self::parseTitle( $row->target );
+				// The usual canonical spelling is always queried directly.
+				// Only alternatives need space in the shared cache backend.
+				if ( $title && $row->target !== InterlanguageExtension::getCanonicalTitleText( $title ) ) {
+					$index[self::identity( $title )][$row->target] = true;
 				}
 			}
 		}
@@ -123,12 +127,14 @@ final class InterlanguageReverseLookup {
 		$identities = [];
 		$raws = [];
 		foreach ( $targets as $target ) {
-			$identity = self::identity( $target );
-			if ( $identity === null ) {
+			$title = self::parseTitle( $target );
+			if ( !$title ) {
 				return null;
 			}
+			$identity = self::identity( $title );
 			$identities[$identity] = true;
 			$raws[$target] = true;
+			$raws[InterlanguageExtension::getCanonicalTitleText( $title )] = true;
 			foreach ( $index[$identity] ?? [] as $raw => $unused ) {
 				$raws[$raw] = true;
 			}
@@ -160,8 +166,8 @@ final class InterlanguageReverseLookup {
 			if ( ++$scanned > self::MAX_CANDIDATES ) {
 				return null;
 			}
-			$identity = self::identity( $row->target );
-			if ( $identity !== null && isset( $identities[$identity] ) ) {
+			$title = self::parseTitle( $row->target );
+			if ( $title && isset( $identities[self::identity( $title )] ) ) {
 				$candidates[(int)$row->page_id] = $row;
 				if ( !$collectAll && count( $candidates ) > 1 ) {
 					return $candidates;
