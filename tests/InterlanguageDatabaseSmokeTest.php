@@ -125,6 +125,8 @@ namespace {
 	}
 
 	require_once dirname( __DIR__ ) . '/InterlanguageExtension.php';
+	define( 'NS_USER', 2 );
+	define( 'NS_USER_TALK', 3 );
 	class_alias( Title::class, 'MediaWiki\Title\Title' );
 	require_once dirname( __DIR__ ) . '/InterlanguageTitleLookup.php';
 

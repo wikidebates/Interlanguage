@@ -156,17 +156,20 @@ aliases are passed to an exact indexed join against the live mappings and
 central page IDs. Native claims take precedence over supplemental claims;
 native-shadowed supplemental rows are excluded from effective lookup.
 
-To avoid repeating title parsing, cache the derived map of simple main-space
-spellings via MediaWiki's existing local-server object cache (falling back
-to the configured main object cache). Its key includes a hash of the actual
-raw spellings and effective main-space parsing rules. Changes to the set
-of spellings create a different key. Namespace-like titles, entity forms
-and interwiki syntax are parsed live, since their interpretation may change
-when a prefix is reconfigured. The cache stores no source IDs, links,
-permissions or authoritative claims. Changing a source, adding/removing
-a link, evicting the cache or using separate cache backends cannot make an
-old spelling dictionary authoritative. A disabled object cache simply
-recomputes the same result. No cross-wiki cache invalidation is required.
+A conservative suffix rejection avoids parsing obviously unrelated titles:
+after MediaWiki's whitespace and bidi cleanup, the part after the last
+colon (except its first character) must remain a suffix of the receiving
+DB key. This is only a negative test; the actual title parser verifies
+every candidate. Entity syntax, fragments and user/IP normalization take
+the unfiltered parser path. Unknown prefixes, namespace aliases, ordinary
+colons and first-letter capitalization are never interpreted by the
+prefilter itself.
+
+No extension-specific object cache or cross-wiki invalidation is needed.
+MediaWiki's ordinary in-process title cache and parser cache remain in
+use. Every lookup reads the live raw spellings and live source IDs, so
+adding/removing a mapping or reconfiguring a prefix cannot leave behind an
+authoritative stale index.
 
 Trade-off: this is a covering index range read for the requested language
 on every actual parse/lifecycle lookup, not a constant-cost point lookup

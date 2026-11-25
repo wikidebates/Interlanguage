@@ -2,18 +2,16 @@
 
 declare( strict_types=1 );
 
-use MediaWiki\MediaWikiServices;
 use MediaWiki\Title\Title;
 
 /**
  * Reverse discovery using the original mapping indexes and receiver-local parsing.
- * The cache is only a memo of normalization, not an authority on live mappings.
+ * Only the receiving wiki's title parser can establish a match.
  */
 final class InterlanguageTitleLookup {
 	// Exposed for read-only operational diagnostics, not configuration.
 	public const MAX_SPELLINGS = 20000;
 	public const MAX_CANDIDATES = 256;
-	private const CACHE_TTL = 600;
 
 	private static function identity( string $raw ): ?string {
 		$title = Title::newFromText( $raw );
@@ -24,40 +22,38 @@ final class InterlanguageTitleLookup {
 	}
 
 	/**
-	 * Cache only spellings without colons or entity syntax. Their interpretation
-	 * does not depend on dynamically configured namespace/interwiki prefixes.
-	 * Keyed by the actual live raw spelling set and main namespace title rules;
-	 * safe even with completely separate per-wiki cache backends.
+	 * Conservative rejection, never a positive match. MediaWiki 1.43
+	 * removes bidi controls, normalizes title whitespace, strips recognized
+	 * prefixes and may capitalize the first character. The last colon's
+	 * remaining text, minus its first character and edge whitespace, must
+	 * therefore be a suffix of the receiving DB key.
 	 *
-	 * @return array<string,string[]> Local identities => original raw spellings
+	 * Entity decoding, fragments and user/IP normalization take the full
+	 * parser path instead. Empty suffixes and malformed UTF-8 do too.
+	 * No namespace interpretation, case conversion or persistent memo here.
 	 */
-	private static function simpleIndex( array $spellings ): array {
-		if ( !$spellings ) {
-			return [];
+	private static function couldMatch( string $raw, array $dbkeys ): bool {
+		if ( !$dbkeys || strpbrk( $raw, '&#' ) !== false ) {
+			return true;
 		}
-		$services = MediaWikiServices::getInstance();
-		$config = $services->getMainConfig();
-		$cache = $services->getObjectCacheFactory()->getLocalServerInstance( $config->get( 'MainCacheType' ) );
-		$signature = hash( 'sha256', serialize( [
-			$spellings,
-			$services->getContentLanguage()->getCode(),
-			$services->getNamespaceInfo()->isCapitalized( NS_MAIN ),
-			$config->get( 'OverrideUcfirstCharacters' ),
-			Title::legalChars(),
-			MW_VERSION,
-			PHP_VERSION,
-		] ) );
-		$key = $cache->makeKey( 'interlanguage-simple-title-v1', $signature );
-		return $cache->getWithSetCallback( $key, self::CACHE_TTL, static function () use ( $spellings ) {
-			$index = [];
-			foreach ( $spellings as $raw ) {
-				$identity = self::identity( $raw );
-				if ( $identity !== null ) {
-					$index[$identity][] = $raw;
-				}
+		$colon = strrpos( $raw, ':' );
+		$tail = $colon === false ? $raw : substr( $raw, $colon + 1 );
+		// Same whitespace and bidi cleanup as MediaWikiTitleCodec 1.43.
+		$tail = preg_replace( '/[\x{200E}\x{200F}\x{202A}-\x{202E}]+/u', '', $tail );
+		if ( $tail === null ) {
+			return true;
+		}
+		$tail = preg_replace( '/[ _\xA0\x{1680}\x{180E}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}]+/u', '_', $tail );
+		if ( $tail === null ) {
+			return true;
+		}
+		$suffix = mb_substr( trim( $tail, '_' ), 1, null, 'UTF-8' );
+		foreach ( $dbkeys as $key ) {
+			if ( str_ends_with( $key, $suffix ) ) {
+				return true;
 			}
-			return $index;
-		} );
+		}
+		return false;
 	}
 
 	/**
@@ -74,7 +70,17 @@ final class InterlanguageTitleLookup {
 			__METHOD__,
 			[ 'DISTINCT', 'ORDER BY' => $prefix . '_title', 'LIMIT' => self::MAX_SPELLINGS + 1 ]
 		);
-		$simple = [];
+		$dbkeys = [];
+		foreach ( array_keys( $identities ) as $identity ) {
+			[ $ns, $key ] = explode( "\0", $identity, 2 );
+			// Core can canonicalize an entire IPv6 user name, not just its
+			// first character. Do not reject by suffix in either user namespace.
+			if ( in_array( (int)$ns, [ NS_USER, NS_USER_TALK ], true ) ) {
+				$dbkeys = [];
+				break;
+			}
+			$dbkeys[] = $key;
+		}
 		$matches = [];
 		$count = 0;
 		foreach ( $rows as $row ) {
@@ -82,28 +88,18 @@ final class InterlanguageTitleLookup {
 				return null;
 			}
 			$raw = $row->target;
-			if ( strpbrk( $raw, ':&' ) === false ) {
-				$simple[] = $raw;
-			} else {
-				// Prefixes can change without a mapping write. Interpret them
-				// live, including initial colons, aliases, and local interwikis.
-				$identity = self::identity( $raw );
-				if ( $identity !== null && isset( $identities[$identity] ) ) {
-					$matches[] = $raw;
+			if ( !self::couldMatch( $raw, $dbkeys ) ) {
+				continue;
+			}
+			$identity = self::identity( $raw );
+			if ( $identity !== null && isset( $identities[$identity] ) ) {
+				$matches[] = $raw;
+				if ( count( $matches ) > self::MAX_CANDIDATES ) {
+					return null;
 				}
 			}
 		}
-		// The SQL ORDER BY gives a stable content-addressed cache key.
-		$index = self::simpleIndex( $simple );
-		foreach ( $identities as $identity => $unused ) {
-			foreach ( $index[$identity] ?? [] as $raw ) {
-				// Re-verify hits with the actual current title parser.
-				if ( self::identity( $raw ) === $identity ) {
-					$matches[] = $raw;
-				}
-			}
-		}
-		return count( $matches ) > self::MAX_CANDIDATES ? null : $matches;
+		return $matches;
 	}
 
 	/**
