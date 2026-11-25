@@ -34,7 +34,7 @@ namespace MediaWiki {
 
 	class InterlanguagePurgeTestInterwikiLookup {
 		public function fetch( string $lang ) {
-			return $lang === 'en' ? new InterlanguagePurgeTestInterwiki() : false;
+			return in_array( $lang, [ 'en', 'fr', 'de' ], true ) ? new InterlanguagePurgeTestInterwiki() : false;
 		}
 	}
 
@@ -95,6 +95,7 @@ namespace {
 		}
 	}
 
+	$wgLanguageCode = 'fr';
 	$services = \MediaWiki\MediaWikiServices::getInstance();
 	$logger = \MediaWiki\Logger\LoggerFactory::getInstance( 'Interlanguage' );
 	$job = new \InterlanguageCentralExtensionPurgeJob(
@@ -102,7 +103,7 @@ namespace {
 		[ 'ill' => [ 'en' => [ 'Topic:Subtopic' => true ], 'xx' => [ 'Missing' => true ] ] ]
 	);
 
-	$services->http->response = '{"purge":[{"title":"Topic:Subtopic","purged":true}]}';
+	$services->http->response = '{"purge":[{"title":"Topic:Subtopic","purged":true,"linkupdate":true}]}';
 	assertInterlanguagePurge( $job->run() === true, 'Successful purge must complete' );
 	assertInterlanguagePurge(
 		count( $logger->warnings ) === 0,
@@ -123,16 +124,15 @@ namespace {
 	assertInterlanguagePurge( $job->run() === true, 'Network failure must preserve the current job semantics' );
 	assertInterlanguagePurge( count( $logger->warnings ) === 2, 'Missing HTTP responses must be logged' );
 
-	// Keep the historical plain purge unless the target is explicitly opted in.
-	assertInterlanguagePurge( !str_contains( $services->http->urls[0], 'forcelinkupdate' ), 'Default must remain plain purge' );
-	$wgInterlanguagePurgeLinkUpdateLanguages = [ 'en' ];
+	// A dependent automatically receives a non-recursive link update.
+	assertInterlanguagePurge( str_contains( $services->http->urls[0], 'forcelinkupdate=1' ), 'Dependent targets always request a targeted link update' );
 	$services->http->response = '{"purge":[{"title":"Topic:Subtopic","purged":"","linkupdate":""}]}';
 	$job->run();
 	$url = end( $services->http->urls );
 	assertInterlanguagePurge(
 		str_contains( $url, 'forcelinkupdate=1' ) && str_contains( $url, 'redirects=1' ) &&
 			!str_contains( $url, 'forcerecursivelinkupdate' ),
-		'Opt-in must request only a targeted link update and resolve redirects'
+		'Dependent purge must request only a targeted link update and resolve redirects'
 	);
 	assertInterlanguagePurge( count( $logger->warnings ) === 2, 'API v1 empty-string flags are valid acknowledgements' );
 
@@ -148,9 +148,18 @@ namespace {
 	$job->run();
 	assertInterlanguagePurge( count( $logger->warnings ) === 4, 'Incomplete API results must be reported' );
 
-	$wgInterlanguagePurgeLinkUpdateLanguages = [];
-	$services->http->response = '{"purge":[{"title":"Topic:Subtopic"}]}';
-	$job->run();
+	// Jobs sent from a dependent wiki still recognize the central target.
+	$wgLanguageCode = 'de';
+	$wgInterlanguageExtensionInterwiki = 'fr:';
+	$centralJob = new \InterlanguageCentralExtensionPurgeJob( new Title(), [ 'ill' => [ 'fr' => [ 'Central' => true ] ] ] );
+	$services->http->response = '{"purge":[{"title":"Central","purged":""}]}';
+	$centralJob->run();
+	$url = end( $services->http->urls );
+	assertInterlanguagePurge( !str_contains( $url, 'forcelinkupdate' ) && !str_contains( $url, 'redirects=1' ),
+		'Central wiki needs only ordinary purge, including jobs from dependents' );
+	assertInterlanguagePurge( count( $logger->warnings ) === 4, 'Successful central purge needs no linkupdate acknowledgement' );
+	$services->http->response = '{"purge":[{"title":"Central"}]}';
+	$centralJob->run();
 	assertInterlanguagePurge( count( $logger->warnings ) === 5, 'Unacknowledged plain purges must also be reported' );
 
 	$many = [];
@@ -158,7 +167,7 @@ namespace {
 		$many['Page ' . $i] = true;
 	}
 	$services->http->urls = [];
-	$services->http->response = '{"purge":[{"title":"Page","purged":""}]}';
+	$services->http->response = '{"purge":[{"title":"Page","purged":"","linkupdate":""}]}';
 	$batchJob = new \InterlanguageCentralExtensionPurgeJob( new Title(), [ 'ill' => [ 'en' => $many ] ] );
 	$batchJob->run();
 	assertInterlanguagePurge( count( $services->http->urls ) === 2, 'Limit a purge API batch to 50 titles' );

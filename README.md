@@ -186,35 +186,30 @@ Remove obsolete InterlanguageMaintainTitleKeys and InterlanguageUseTitleKeys
 settings when convenient. Existing API, purge and namespace configurations
 are preserved.
 
-## Targeted secondary-data refresh (optional)
+## Automatic targeted secondary-data refresh
 
-Plain API purges invalidate rendering caches, but do not guarantee that
-MediaWiki rewrites the persisted parser property. A separate, opt-in
-configuration on the **sending** wiki can request core's non-recursive
-secondary-data update for specific destination language codes:
+The existing asynchronous purge job now requests non-recursive secondary
+data refresh for dependent destinations, without an activation parameter.
+Only those destinations persist the computed translation group. The central
+wiki continues to receive ordinary purges because its effective links are
+read directly from its mapping tables.
 
-```php
-$wgInterlanguagePurgeLinkUpdateLanguages = [ 'en' ];
-```
+The dependent request uses forcelinkupdate=1 and redirects=1, never
+forcerecursivelinkupdate. MediaWiki 1.43 independently authorizes purge and
+linkpurge (both normally implicit rights). If the latter is refused, an
+authorized ordinary purge can still succeed. Missing acknowledgements,
+permission errors and rate limits are diagnosed, not bypassed or retried.
+There is no additional HTTP request during parsing, no new job type and
+no expansion of receiving wiki permissions. Verify the actual receiving
+API's authorization and persistent properties as part of production
+validation.
 
-Set this after the central or dependent loader. The default is an empty list,
-so existing installations keep ordinary purges. The opt-in request uses
-`forcelinkupdate=1` and `redirects=1` (not the recursive flag). It
-requires the receiving API to authorize **both** purge and linkpurge for
-the actual request identity. MediaWiki 1.43 normally defines these as
-implicit rights, so a default installation may already authorize the job's
-anonymous request. If an installation deliberately declares linkpurge as
-an explicit available right and restricts its permissions, the job does not
-authenticate to the remote API by itself. Do not relax existing restrictions
-to enable this option. Verify the target's actual authorization, both API
-flags and the persisted page property before activation. A successful HTTP
-response or plain purge is not proof of an updated property.
-
-The job logs missing acknowledgements and incomplete responses, skips missing
-or deleted peers, limits requests to batches of at most 50 titles and retains
-the existing non-retrying behavior. No new HTTP request is made by a parsing
-hook. Production authorization and targeted retry/reconciliation policy must
-be handled separately; no global link-table or cache rebuild is implied.
+This replaces the optional wgInterlanguagePurgeLinkUpdateLanguages setting.
+Remove it if it was added during an earlier rollout. The existing fallback
+notification setting and interwiki API routes are unchanged. The job
+remains bounded to 50 titles per request and does not retry automatically
+on errors. An acknowledged targeted refresh is not proof that unrelated
+custom HTML caches or all historical properties have been rebuilt.
 
 ## Redirect safety
 

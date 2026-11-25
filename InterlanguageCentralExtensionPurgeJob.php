@@ -40,7 +40,11 @@ class InterlanguageCentralExtensionPurgeJob extends Job {
 	 * @return bool
 	 */
 	public function run() {
-		global $wgInterlanguagePurgeLinkUpdateLanguages;
+		// Only dependent pages persist the computed translation group.
+		// The central wiki reads the mapping tables directly; ordinary purge
+		// is enough there. MediaWiki itself authorizes both actions.
+		$central = rtrim( (string)( $GLOBALS['wgInterlanguageExtensionInterwiki'] ?? '' ), ':' );
+		$central = $central !== '' ? $central : (string)$GLOBALS['wgLanguageCode'];
 
 		$ill = $this->params['ill'];
 		$mwServices = MediaWikiServices::getInstance();
@@ -52,7 +56,7 @@ class InterlanguageCentralExtensionPurgeJob extends Job {
 				continue;
 			}
 			$apiUrl = $iw->getAPI();
-			$force = in_array( $lang, $wgInterlanguagePurgeLinkUpdateLanguages ?? [], true );
+			$force = $lang !== $central;
 
 			// Core limits ordinary API title lists to 50. Batches also avoid
 			// unbounded requests if old queued jobs contain many targets.
@@ -63,8 +67,8 @@ class InterlanguageCentralExtensionPurgeJob extends Job {
 					'titles' => implode( '|', $titles ),
 				];
 				if ( $force ) {
-					// Requires the target API's linkpurge right. Never request
-					// a recursive refresh of unrelated dependent pages.
+					// Core checks linkpurge separately from purge. A denied
+					// link update is diagnosed below, not retried or bypassed.
 					$params['forcelinkupdate'] = 1;
 					$params['redirects'] = 1;
 				}
