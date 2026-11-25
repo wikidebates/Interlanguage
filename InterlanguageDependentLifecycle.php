@@ -14,8 +14,6 @@ use Wikimedia\Rdbms\IDatabase;
  * never rewrite or delete them here. Only touch exact, verified automatic rows.
  */
 final class InterlanguageDependentLifecycle {
-	private const LIMIT = 256;
-
 	public static function onPageDeleteComplete( $page, $deleter, $reason, $pageId, $revision, $logEntry, $count ): void {
 		if ( !self::enabled() ) {
 			return;
@@ -63,39 +61,6 @@ final class InterlanguageDependentLifecycle {
 		return $db->selectRow( 'page', [ 'page_id', 'page_is_redirect' ], [
 			'page_namespace' => $title->getNamespace(), 'page_title' => $title->getDBkey(),
 		], __METHOD__ );
-	}
-
-	/**
-	 * Return all matches, not only the first two used by ordinary rendering.
-	 * Legacy installations retain indexed exact lookup until the dictionary
-	 * is activated; never scan the central mapping tables.
-	 */
-	private static function candidates( $db, array $targets, string $lang, bool $native, bool $shadowed = false ): ?array {
-		if ( $GLOBALS['wgInterlanguageUseTitleKeys'] ?? false ) {
-			return InterlanguageTitleKeys::findCandidates( $db, $targets, $lang, $native, true, $shadowed );
-		}
-		$prefix = $native ? 'll' : 'ill';
-		$tables = [ 'mapping' => $native ? 'langlinks' : 'interlanguage_links', 'sourcepage' => 'page' ];
-		$joins = [ 'sourcepage' => [ 'JOIN', "sourcepage.page_id = mapping.{$prefix}_from" ] ];
-		$conditions = [ "mapping.{$prefix}_lang" => $lang, "mapping.{$prefix}_title" => $targets ];
-		if ( !$native && !$shadowed ) {
-			$tables['native'] = 'langlinks';
-			$joins['native'] = [ 'LEFT JOIN', 'native.ll_from = mapping.ill_from AND native.ll_lang = mapping.ill_lang' ];
-			$conditions['native.ll_from'] = null;
-		}
-		$rows = $db->select( $tables, [
-			'page_id' => 'sourcepage.page_id', 'page_namespace' => 'sourcepage.page_namespace',
-			'page_title' => 'sourcepage.page_title', 'page_is_redirect' => 'sourcepage.page_is_redirect',
-			'target' => "mapping.{$prefix}_title",
-		], $conditions, __METHOD__, [ 'LIMIT' => self::LIMIT + 1 ], $joins );
-		$result = [];
-		foreach ( $rows as $row ) {
-			$result[(int)$row->page_id] = $row;
-			if ( count( $result ) > self::LIMIT ) {
-				return null;
-			}
-		}
-		return $result;
 	}
 
 	private static function resolveLocal( $db, Title $title ): ?Title {
@@ -164,16 +129,17 @@ final class InterlanguageDependentLifecycle {
 			return;
 		}
 		$oldText = InterlanguageExtension::getCanonicalTitleText( $old );
+		$oldTargets = InterlanguageExtension::getLookupTitleTexts( $old );
 		$oldAliases = $extension->getLocalRedirectTitles( $local, $old );
 		$newAliases = $new ? $extension->getLocalRedirectTitles( $local, $new ) : [];
-		$complete = $oldAliases !== null && $newAliases !== null;
+		$complete = $oldTargets && $oldAliases !== null && $newAliases !== null;
 		$targets = array_values( array_unique( array_merge(
-			$oldAliases ?? [ $oldText ],
-			$newAliases ?? [ InterlanguageExtension::getCanonicalTitleText( $new ) ]
+			$oldAliases ?? $oldTargets,
+			$newAliases ?? InterlanguageExtension::getLookupTitleTexts( $new )
 		) ) );
-		$native = self::candidates( $central, $targets, $wgLanguageCode, true );
-		$supplemental = self::candidates( $central, $targets, $wgLanguageCode, false );
-		$direct = self::candidates( $central, [ $oldText ], $wgLanguageCode, false, true );
+		$native = InterlanguageExtension::findCentralCandidates( $central, $targets, $wgLanguageCode, true, true );
+		$supplemental = InterlanguageExtension::findCentralCandidates( $central, $targets, $wgLanguageCode, false, true );
+		$direct = InterlanguageExtension::findCentralCandidates( $central, $oldTargets, $wgLanguageCode, false, true, true );
 		if ( !$complete || $native === null || $supplemental === null || $direct === null ) {
 			LoggerFactory::getInstance( 'Interlanguage' )->warning(
 				'Incomplete page lifecycle lookup for {title}; automatic mapping changes skipped',
@@ -193,7 +159,7 @@ final class InterlanguageDependentLifecycle {
 						'ill_from' => $id, 'ill_lang' => $wgLanguageCode, 'ill_title' => $row->target,
 					], __METHOD__ );
 				}
-			} elseif ( ( $GLOBALS['wgInterlanguageUseTitleKeys'] ?? false ) && !$native &&
+			} elseif ( !$native &&
 				count( $supplemental ) === 1 && count( $direct ) === 1 &&
 				!(int)$newRow->page_is_redirect
 			) {
@@ -204,9 +170,6 @@ final class InterlanguageDependentLifecycle {
 				if ( isset( $supplemental[$id] ) && !(int)$row->page_is_redirect ) {
 					$newText = InterlanguageExtension::getCanonicalTitleText( $new );
 					$central->doAtomicSection( __METHOD__, static function () use ( $central, $id, $row, $wgLanguageCode, $newText ) {
-						if ( ( $GLOBALS['wgInterlanguageMaintainTitleKeys'] ?? false ) || ( $GLOBALS['wgInterlanguageUseTitleKeys'] ?? false ) ) {
-							InterlanguageTitleKeys::remember( $central, $wgLanguageCode, $newText );
-						}
 						$central->delete( 'interlanguage_links', [
 							'ill_from' => $id, 'ill_lang' => $wgLanguageCode, 'ill_title' => $row->target,
 						], __METHOD__ );

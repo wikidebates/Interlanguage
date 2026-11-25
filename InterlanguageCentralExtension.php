@@ -9,14 +9,6 @@ use MediaWiki\Title\Title;
 
 class InterlanguageCentralExtension {
 
-	/** The auxiliary table is central-only; the dependent legacy loader has no schema hook. */
-	public static function onLoadExtensionSchemaUpdates( $updater ) {
-		if ( $updater->getDB()->getType() === 'mysql' ) {
-			$updater->addExtensionTable( 'interlanguage_title_keys', __DIR__ . '/sql/interlanguage_title_keys.sql' );
-		}
-		return true;
-	}
-
 	/**
 	 * Register parser function
 	 */
@@ -101,13 +93,6 @@ class InterlanguageCentralExtension {
 
 		// All peers, including supplemental ones, may have gained or lost
 		// a translation. Native links take precedence in both groups.
-		if ( $GLOBALS['wgInterlanguageMaintainTitleKeys'] ?? false ) {
-			foreach ( $newNative as $lang => $targets ) {
-				foreach ( array_diff_key( $targets, $oldNative[$lang] ?? [] ) as $target => $unused ) {
-					InterlanguageTitleKeys::remember( $db, (string)$lang, (string)$target );
-				}
-			}
-		}
 		$supplemental = self::readSupplemental( $db, $pageId );
 		$before = $oldNative + $supplemental;
 		$after = $newNative + $supplemental;

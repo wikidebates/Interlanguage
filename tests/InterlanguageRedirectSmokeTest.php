@@ -21,14 +21,26 @@ namespace {
 		public function __construct( private int $ns, private string $key ) {}
 
 		public static function newFromText( string $text ): self {
-			if ( str_starts_with( $text, 'Template:' ) ) {
-				return new self( 10, str_replace( ' ', '_', substr( $text, 9 ) ) );
+			if ( preg_match( '/^(Template|Model): *(.*)$/', $text, $match ) ) {
+				return new self( 10, str_replace( ' ', '_', $match[2] ) );
 			}
 			return new self( 0, str_replace( ' ', '_', $text ) );
 		}
 
 		public static function newFromRow( object $row ): self {
 			return new self( (int)$row->page_namespace, $row->page_title );
+		}
+
+		public function getNsText(): string {
+			return $this->ns === 10 ? 'Model' : '';
+		}
+
+		public function isExternal(): bool {
+			return false;
+		}
+
+		public function getFragment(): string {
+			return '';
 		}
 
 		public function getNamespace(): int {
@@ -44,12 +56,14 @@ namespace {
 		}
 	}
 
+	define( 'NS_MAIN', 0 );
 	require_once dirname( __DIR__ ) . '/InterlanguageExtension.php';
 
 	class RedirectTestDatabase {
 		public array $pages = [];
 		public array $redirects = [];
 		public array $native = [];
+		public array $supplemental = [];
 		public int $calls = 0;
 
 		public function page( int $id, int $ns, string $key, bool $redirect = false ): void {
@@ -77,21 +91,35 @@ namespace {
 			throw new \RuntimeException( 'Non-indexed or unexpected forward query' );
 		}
 
-		public function select( $tables, $fields, $conditions, $caller, $options ): array {
+		public function select( $tables, $fields, $conditions, $caller, $options, $joins = [] ): array {
 			$this->calls++;
-			if ( $tables === [ 'langlinks', 'page' ] ) {
-				if ( $options !== [ 'LIMIT' => 2 ] || $conditions['ll_lang'] !== 'en' ||
-					!is_array( $conditions['ll_title'] ) || !in_array( 'page_id = ll_from', $conditions, true )
+			if ( isset( $tables['mapping'] ) ) {
+				$native = $tables['mapping'] === 'langlinks';
+				$prefix = $native ? 'll' : 'ill';
+				if ( $conditions["mapping.{$prefix}_lang"] !== 'en' ||
+					!is_array( $conditions["mapping.{$prefix}_title"] ) ||
+					$joins['sourcepage'][1] !== "sourcepage.page_id = mapping.{$prefix}_from" ||
+					!in_array( $options, [ [ 'LIMIT' => 2 ], [ 'LIMIT' => 257 ] ], true )
 				) {
-					throw new \RuntimeException( 'Unexpected native reverse query' );
+					throw new \RuntimeException( 'Unexpected reverse query' );
 				}
 				$matches = [];
-				foreach ( $this->native as $target => $page ) {
-					if ( in_array( $target, $conditions['ll_title'], true ) ) {
-						$matches[] = $page;
+				foreach ( $native ? $this->native : $this->supplemental as $target => $page ) {
+					if ( !$native && isset( $joins['native'] ) ) {
+						if ( $conditions['native.ll_from'] !== null ||
+							$joins['native'][1] !== 'native.ll_from = mapping.ill_from AND native.ll_lang = mapping.ill_lang'
+						) {
+							throw new \RuntimeException( 'Expected native-shadow exclusion' );
+						}
+						if ( in_array( $page->page_id, array_column( $this->native, 'page_id' ), true ) ) {
+							continue;
+						}
+					}
+					if ( in_array( $target, $conditions["mapping.{$prefix}_title"], true ) ) {
+						$matches[] = (object)( (array)$page + [ 'target' => $target ] );
 					}
 				}
-				return array_slice( $matches, 0, 2 );
+				return array_slice( $matches, 0, $options['LIMIT'] );
 			}
 			if ( $tables !== [ 'redirect', 'page' ] || !isset( $conditions['rd_namespace'], $conditions['rd_title'] ) ||
 				!in_array( 'rd_from = page_id', $conditions, true ) || $conditions['page_is_redirect'] !== 1
@@ -171,17 +199,30 @@ namespace {
 
 	$incoming = new \ReflectionMethod( \InterlanguageExtension::class, 'getLocalRedirectTitles' );
 	$targets = $incoming->invoke( $extension, $db, new Title( 10, 'Destination' ) );
-	verifyRedirect( $targets === [ 'Template:Destination', 'Template:Middle', 'Origin' ],
+	verifyRedirect( $targets === [ 'Template:Destination', 'Template: Destination', 'Model:Destination', 'Model: Destination', 'Template:Middle', 'Template: Middle', 'Model:Middle', 'Model: Middle', 'Origin' ],
 		'Reverse lookup includes indirect aliases but excludes interwiki and section redirects' );
 	verifyRedirect( $incoming->invoke( $extension, $db, new Title( 0, 'Destination' ) ) === [ 'Destination' ],
 		'Reverse aliases must not cross namespaces by title text alone' );
 	verifyRedirect( $incoming->invoke( $extension, $db, new Title( 0, 'Long_17' ) ) === null,
 		'Overlong reverse chains must be reported as incomplete' );
 
-	$native = new \ReflectionMethod( \InterlanguageExtension::class, 'findCentralNativeCandidates' );
-	$db->native = [ 'Template:Destination' => $db->pages['10:Destination'], 'Origin' => $db->pages['0:Destination'] ];
-	verifyRedirect( count( $native->invoke( $extension, $db, $targets, 'en' ) ) === 2,
+	$db->native = [ 'Template: Destination' => $db->pages['10:Destination'], 'Origin' => $db->pages['0:Destination'] ];
+	verifyRedirect( count( \InterlanguageExtension::findCentralCandidates( $db, $targets, 'en', true ) ) === 2,
 		'Direct and redirect matches can reveal competing native sources' );
+	$db->native = [ 'Unrelated' => $db->pages['10:Destination'] ];
+	$db->supplemental = [ 'Model:Destination' => $db->pages['10:Destination'], 'Origin' => $db->pages['0:Destination'] ];
+	$result = \InterlanguageExtension::findCentralCandidates( $db, $targets, 'en', false );
+	verifyRedirect( array_keys( $result ) === [ 4 ], 'Only unshadowed supplemental claims are effective' );
+	$result = \InterlanguageExtension::findCentralCandidates( $db, $targets, 'en', false, true, true );
+	verifyRedirect( array_keys( $result ) === [ 3, 4 ], 'Lifecycle can collect shadowed rows for direct cleanup' );
+
+	$spellings = \InterlanguageExtension::getLookupTitleTexts( new Title( 10, 'An_argument' ) );
+	verifyRedirect( $spellings === [ 'Template:An argument', 'Template: An argument', 'Template:An_argument', 'Template: An_argument',
+		'Model:An argument', 'Model: An argument', 'Model:An_argument', 'Model: An_argument' ],
+		'Bounded common namespace spellings use one exact index predicate' );
+	verifyRedirect( \InterlanguageExtension::getLookupTitleTexts( new Title( 0, 'Topic:Same_tail' ) ) ===
+		[ 'Topic:Same tail', 'Topic:Same_tail' ], 'Never insert namespace separator whitespace into an ordinary colon title' );
+	verifyRedirect( !in_array( 'Template:an__argument', $spellings, true ), 'Unusual spellings remain an audit concern' );
 
 	$wide = new RedirectTestDatabase();
 	$wide->page( 1, 0, 'Target' );
