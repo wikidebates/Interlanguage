@@ -105,6 +105,9 @@ namespace {
 		public function getTitle() {
 			return $this->title;
 		}
+		public function getPageId(): int {
+			return $this->title->getArticleID();
+		}
 		public function getParserOutput() {
 			return $this->output;
 		}

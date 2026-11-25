@@ -1,5 +1,7 @@
 <?php
 
+use MediaWiki\Deferred\DeferredUpdates;
+use MediaWiki\Deferred\LinksUpdate\LinksDeletionUpdate;
 use MediaWiki\MediaWikiServices;
 use MediaWiki\Parser\Parser;
 use MediaWiki\Parser\ParserOutput;
@@ -57,8 +59,30 @@ class InterlanguageCentralExtension {
 		self::$pendingPurges ??= new WeakMap();
 		unset( self::$pendingPurges[$linksUpdate] );
 
-		$oldNative = self::getILL( DB_PRIMARY, $title );
+		$db = MediaWikiServices::getInstance()->getConnectionProvider()->getPrimaryDatabase();
+		$pageId = (int)$linksUpdate->getPageId();
+		if ( !$pageId ) {
+			return true;
+		}
+		$oldNative = self::readNative( $db, $pageId );
 		unset( $oldNative[$wgLanguageCode] );
+		if ( $linksUpdate instanceof LinksDeletionUpdate ) {
+			// Core supplies the deleted page ID even if its title has been
+			// reused. Do not remove supplemental mappings after an undelete
+			// that has already restored the same ID.
+			if ( $db->selectRow( 'page', [ 'page_id' ], [ 'page_id' => $pageId ], __METHOD__ ) ) {
+				return true;
+			}
+			$supplemental = self::readSupplemental( $db, $pageId );
+			$db->delete( 'interlanguage_links', [ 'ill_from' => $pageId ], __METHOD__ );
+			$affected = $oldNative + $supplemental;
+			if ( $affected ) {
+				self::$pendingPurges[$linksUpdate] = new InterlanguageCentralExtensionPurgeJob(
+					$title, [ 'ill' => $affected ]
+				);
+			}
+			return true;
+		}
 		$newNative = [];
 		foreach ( $parserOutput->getLanguageLinks() as $link ) {
 			if ( !is_string( $link ) || !str_contains( $link, ':' ) ) {
@@ -77,7 +101,6 @@ class InterlanguageCentralExtension {
 
 		// All peers, including supplemental ones, may have gained or lost
 		// a translation. Native links take precedence in both groups.
-		$db = MediaWikiServices::getInstance()->getConnectionProvider()->getPrimaryDatabase();
 		if ( $GLOBALS['wgInterlanguageMaintainTitleKeys'] ?? false ) {
 			foreach ( $newNative as $lang => $targets ) {
 				foreach ( array_diff_key( $targets, $oldNative[$lang] ?? [] ) as $target => $unused ) {
@@ -85,17 +108,7 @@ class InterlanguageCentralExtension {
 				}
 			}
 		}
-		$supplemental = [];
-		foreach ( $db->select(
-			'interlanguage_links',
-			[ 'ill_lang', 'ill_title' ],
-			[ 'ill_from' => $title->getArticleID() ],
-			__METHOD__
-		) as $row ) {
-			if ( $row->ill_lang !== $wgLanguageCode ) {
-				$supplemental[$row->ill_lang][$row->ill_title] = true;
-			}
-		}
+		$supplemental = self::readSupplemental( $db, $pageId );
 		$before = $oldNative + $supplemental;
 		$after = $newNative + $supplemental;
 		ksort( $before, SORT_STRING );
@@ -133,10 +146,14 @@ class InterlanguageCentralExtension {
 			? MediaWikiServices::getInstance()->getConnectionProvider()->getPrimaryDatabase()
 			: MediaWikiServices::getInstance()->getConnectionProvider()->getReplicaDatabase();
 
+		return self::readNative( $dbr, (int)$title->getArticleID() );
+	}
+
+	private static function readNative( $dbr, int $pageId ): array {
 		$res = $dbr->select(
 			'langlinks',
 			[ 'll_lang', 'll_title' ],
-			[ 'll_from' => $title->getArticleID() ],
+			[ 'll_from' => $pageId ],
 			__METHOD__
 		);
 
@@ -150,6 +167,43 @@ class InterlanguageCentralExtension {
 		}
 
 		return $a;
+	}
+
+	private static function readSupplemental( $db, int $pageId ): array {
+		global $wgLanguageCode;
+		$links = [];
+		foreach ( $db->select( 'interlanguage_links', [ 'ill_lang', 'ill_title' ],
+			[ 'ill_from' => $pageId ], __METHOD__ ) as $row
+		) {
+			if ( $row->ill_lang !== $wgLanguageCode ) {
+				$links[$row->ill_lang][$row->ill_title] = true;
+			}
+		}
+		return $links;
+	}
+
+	/** The page ID survives a move, but the peers' stored French title does not. */
+	public static function onPageMoveComplete( $old, $new, $user, $pageId, $redirId, $reason, $revision ): void {
+		global $wgLanguageCode;
+		$db = MediaWikiServices::getInstance()->getConnectionProvider()->getPrimaryDatabase();
+		if ( !$db->selectRow( 'page', [ 'page_id' ], [
+			'page_id' => (int)$pageId,
+			'page_namespace' => $new->getNamespace(),
+			'page_title' => $new->getDBkey(),
+		], __METHOD__ ) ) {
+			return;
+		}
+		$affected = self::readNative( $db, (int)$pageId ) + self::readSupplemental( $db, (int)$pageId );
+		unset( $affected[$wgLanguageCode] );
+		if ( !$affected ) {
+			return;
+		}
+		$job = new InterlanguageCentralExtensionPurgeJob( Title::castFromLinkTarget( $new ), [ 'ill' => $affected ] );
+		$db->onTransactionCommitOrIdle( static function () use ( $job ) {
+			DeferredUpdates::addCallableUpdate( static function () use ( $job ) {
+				MediaWikiServices::getInstance()->getJobQueueGroup()->push( $job );
+			} );
+		}, __METHOD__ );
 	}
 
 	/**

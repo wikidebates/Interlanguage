@@ -149,7 +149,9 @@ final class InterlanguageTitleKeys {
 	 * @param string[] $targets Local title and verified local redirect aliases
 	 * @return array<int,object>|null
 	 */
-	public static function findCandidates( $db, array $targets, string $language, bool $native ): ?array {
+	public static function findCandidates(
+		$db, array $targets, string $language, bool $native, bool $collectAll = false, bool $includeShadowed = false
+	): ?array {
 		$overrides = MediaWikiServices::getInstance()->getMainConfig()->get( 'OverrideUcfirstCharacters' );
 		$identities = [];
 		$keys = [];
@@ -181,7 +183,7 @@ final class InterlanguageTitleKeys {
 			'titlekey.itk_lang' => $language,
 			'titlekey.itk_key' => array_keys( $keys ),
 		];
-		if ( !$native ) {
+		if ( !$native && !$includeShadowed ) {
 			$tables['native'] = 'langlinks';
 			$joins['native'] = [ 'LEFT JOIN', 'native.ll_from = mapping.ill_from AND native.ll_lang = mapping.ill_lang' ];
 			$conditions['native.ll_from'] = null;
@@ -209,7 +211,7 @@ final class InterlanguageTitleKeys {
 			$identity = self::identity( $row->target );
 			if ( $identity !== null && isset( $identities[$identity] ) ) {
 				$candidates[(int)$row->page_id] = $row;
-				if ( count( $candidates ) > 1 ) {
+				if ( !$collectAll && count( $candidates ) > 1 ) {
 					return $candidates;
 				}
 			}

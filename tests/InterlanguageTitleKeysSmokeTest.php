@@ -139,6 +139,9 @@ namespace {
 	$db->rows[] = candidateRow( 6, 'Template: Argument' );
 	$result = InterlanguageTitleKeys::findCandidates( $db, [ 'Template:Argument' ], 'en', false );
 	verifyTitleKey( count( $result ) === 2, 'Detect equivalent claims from different central sources' );
+	$db->rows[] = candidateRow( 8, 'Template:Argument' );
+	$result = InterlanguageTitleKeys::findCandidates( $db, [ 'Template:Argument' ], 'en', true, true );
+	verifyTitleKey( array_keys( $result ) === [ 5, 6, 8 ], 'Lifecycle lookup collects all verified candidates' );
 	$db->rows = array_fill( 0, 257, candidateRow( 7, 'Unrelated:Argument' ) );
 	verifyTitleKey( InterlanguageTitleKeys::findCandidates( $db, [ 'Template:Argument' ], 'en', true ) === null,
 		'An incomplete candidate scan must not authorize a fallback' );

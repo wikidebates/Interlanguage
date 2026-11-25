@@ -116,6 +116,34 @@ MediaWiki rendering caches; it does not itself guarantee that persisted
 page properties or custom external HTML caches have been rebuilt. The
 offline mapping audit remains necessary.
 
+## Page lifecycle
+
+Central moves keep mappings attached to the stable page ID and notify all
+effective peers after commit. Core's LinksDeletionUpdate supplies the deleted
+ID (not the possibly reused title); the extension removes its supplemental
+rows and queues notifications alongside the native link cleanup.
+
+Dependent moves and deletions use the primary local and central databases
+after the local change commits. Only direct verified supplemental rows can
+be deleted when a local page is gone; native langlinks are never changed.
+A move with a redirect preserves the old valid spelling. A move without a
+redirect can retarget a unique, non-shadowed supplemental row only when the
+normalized reader is active and no competing native or automatic claim is found; the old row is compared exactly and
+deleted/inserted atomically, without requesting an additional UPDATE grant.
+A missing or incomplete index search, competing claims, and deleted file or
+MediaWiki message pages are not grounds for speculative remapping. The native
+link of a move without a redirect (or deletion) may require editorial repair.
+
+The affected central page and other peers are notified through the existing
+purge queue when fallback notifications are enabled. A moved dependent page
+and the surviving destination of a deleted redirect receive a targeted,
+non-recursive local refresh after the central write commits. No new job type,
+HTTP request during parsing, or cross-wiki transaction is introduced.
+A title reused before the dependent lifecycle check suppresses destructive
+cleanup. As local and central databases have separate transactions, this
+is not a cross-database lock; audit discrepancies after simultaneous changes.
+No automatic recovery of deleted supplemental links on undeletion is promised.
+
 ## Indexed normalized reverse lookup (optional, central SQL migration)
 
 This mode recognizes legitimate target spellings without changing the raw
