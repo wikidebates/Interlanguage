@@ -10,8 +10,9 @@ use MediaWiki\Title\Title;
  * The cache is only a memo of normalization, not an authority on live mappings.
  */
 final class InterlanguageTitleLookup {
-	private const MAX_SPELLINGS = 20000;
-	private const MAX_CANDIDATES = 256;
+	// Exposed for read-only operational diagnostics, not configuration.
+	public const MAX_SPELLINGS = 20000;
+	public const MAX_CANDIDATES = 256;
 	private const CACHE_TTL = 600;
 
 	private static function identity( string $raw ): ?string {
