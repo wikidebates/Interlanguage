@@ -1,5 +1,11 @@
 Interlanguage centralisé pour MediaWiki 1.43
 
+ARCHIVE HISTORIQUE — ces notes décrivent une ancienne adaptation.
+Pour toute installation, configuration, migration ou recette actuelle,
+consulter README.md. Les anciennes instructions ci-dessous ne sont plus
+une procédure de déploiement : update.php ne crée pas la table historique
+interlanguage_links et le chargeur central nécessite wfLoadExtension().
+
 Cette version reprend la logique de votre variante "Pavel" :
 - les liens interlangues peuvent être saisis sur un seul wiki central ;
 - les autres wikis n'ont pas besoin de dupliquer les liens dans chaque langue.
